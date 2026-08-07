@@ -144,6 +144,12 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
           })
           .where(eq(jobs.id, jobId))
 
+        // Summary is now persisted, so the job is fully usable for the client.
+        // Mark progress 100 immediately so a stale progress value can never
+        // make the UI keep showing "Menyiapkan ringkasan..." after the summary
+        // is already in the database.
+        await cacheJobStatus(jobId, { status: 'completed', progress: 100 })
+
         if (insights.actionItems.length > 0) {
           await db
             .insert(actionItems)
@@ -211,7 +217,6 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
         // Step 2: Polish transcript (refine segment text) in background
         if (segments.length > 0) {
           console.log(`[${jobId}] Background: Refining transcript...`)
-          await cacheJobStatus(jobId, { status: 'completed', progress: 85 })
           try {
             const r = await polishTranscript(segments)
             const polishedSegments = r.polished

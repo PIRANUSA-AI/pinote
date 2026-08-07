@@ -77,7 +77,11 @@ export default function Job() {
     return () => window.removeEventListener('keydown', handler)
   }, [])
 
+  const summaryPending =
+    initial?.status === 'completed' &&
+    !(initial.transcript?.summary && initial.transcript.summary.length > 0)
   const isActive =
+    summaryPending ||
     initial?.status === 'uploading' ||
     initial?.status === 'queued' ||
     initial?.status === 'transcribing' ||
