@@ -12,6 +12,7 @@ import {
 import { ApiError, api } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
 import { BrandMark } from '../components/Brand'
+import { ExtensionPill } from '../components/ExtensionPromo'
 import { signInWithGoogle } from '../lib/firebase'
 
 type Slide = 'welcome' | 'features' | 'personalize' | 'account'
@@ -98,6 +99,12 @@ export default function Welcome() {
         <BrandMark size={30} />
         <span className="text-sm font-semibold tracking-tight text-navy">Rekapin</span>
       </motion.div>
+
+      <div className="pointer-events-none absolute inset-x-0 top-6 z-20 hidden justify-center md:top-7 md:flex">
+        <div className="pointer-events-auto">
+          <ExtensionPill />
+        </div>
+      </div>
 
       {/* Skip control */}
       {slide !== 'account' && (
@@ -308,7 +315,7 @@ const FEATURES = [
   {
     icon: MicrophoneStage,
     title: 'Transkrip otomatis',
-    body: 'Upload audio rapat. Deepgram + GLM menghasilkan transkrip rapi dengan label pembicara.',
+    body: 'Upload audio rapat atau rekam langsung dari Google Meet, Zoom, dan WhatsApp. Transkrip rapi lengkap dengan label pembicara.',
   },
   {
     icon: Sparkle,

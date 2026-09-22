@@ -13,6 +13,12 @@ function isIOS() {
   return /iphone|ipad|ipod/i.test(navigator.userAgent)
 }
 
+function isMobileDevice() {
+  const ua = navigator.userAgent
+  if (/android|iphone|ipad|ipod/i.test(ua)) return true
+  return /macintosh/i.test(ua) && navigator.maxTouchPoints > 1
+}
+
 function isInStandaloneMode() {
   return window.matchMedia('(display-mode: standalone)').matches ||
     ('standalone' in window.navigator && (window.navigator as { standalone?: boolean }).standalone === true)
@@ -24,6 +30,7 @@ export function InstallBanner() {
   const [visible, setVisible] = useState(false)
 
   useEffect(() => {
+    if (!isMobileDevice()) return
     if (isInStandaloneMode()) return
     if (localStorage.getItem(DISMISSED_KEY)) return
 

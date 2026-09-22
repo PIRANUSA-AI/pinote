@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
   ArrowLeft,
@@ -70,6 +70,7 @@ const BROWSERS: Record<Browser, { label: string; page: string; toggleWhere: stri
 
 export default function Extension() {
   const location = useLocation()
+  const navigate = useNavigate()
   const releases = useMemo(() => parseChangelog(changelogRaw), [])
   const [latest, setLatest] = useState<LatestPackage | null>(null)
   const [loadState, setLoadState] = useState<LoadState>('loading')
@@ -113,6 +114,11 @@ export default function Extension() {
       changelogRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
   }, [location.pathname])
+
+  const handleBack = () => {
+    if (location.key !== 'default') navigate(-1)
+    else navigate('/', { replace: true })
+  }
 
   const handleDownload = () => {
     setDownloaded(true)
@@ -159,14 +165,14 @@ export default function Extension() {
     <div className="min-h-[100dvh] bg-paper aurora relative overflow-hidden">
       <div className="absolute inset-0 grid-pattern opacity-50 pointer-events-none" />
 
-      <div className="relative mx-auto w-full max-w-2xl px-5 py-12 md:py-16">
-        <Link
-          to="/login"
+      <div className="relative mx-auto w-full max-w-2xl px-5 pt-12 pb-[calc(6.5rem+env(safe-area-inset-bottom))] md:pt-16 md:pb-32">
+        <button
+          onClick={handleBack}
           className="mb-8 flex w-fit items-center gap-1.5 text-xs font-medium text-slate-400 transition-colors hover:text-navy"
         >
           <ArrowLeft size={12} weight="bold" />
           Kembali ke Rekapin
-        </Link>
+        </button>
 
         <motion.header
           initial={{ opacity: 0, y: 12 }}

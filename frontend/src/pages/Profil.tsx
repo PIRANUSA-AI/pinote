@@ -25,6 +25,7 @@ import {
 import { ApiError, api, type UserStats, type Reminder } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../components/Toast'
+import { ExtensionCard } from '../components/ExtensionPromo'
 import { formatDuration, formatRelativeTime } from '../lib/format'
 
 const USD_TO_IDR = 16_000
@@ -588,6 +589,8 @@ export default function Profil() {
             </p>
           )}
 
+          {!viewUser && <ExtensionCard />}
+
           {user.isAdmin && (
             <Link to="/admin" className="card p-4 mb-3 flex items-center gap-3 hover:bg-paper transition-colors">
               <div className="grid place-items-center w-10 h-10 rounded-xl bg-navy text-white flex-shrink-0">
@@ -595,7 +598,7 @@ export default function Profil() {
               </div>
               <div className="flex-1">
                 <p className="font-semibold text-ink">Panel Admin</p>
-                <p className="text-xs text-ink-muted">Kelola user, kredit, dan analytics tim.</p>
+                <p className="text-xs text-ink-muted">Kelola user dan analytics tim.</p>
               </div>
             </Link>
           )}
