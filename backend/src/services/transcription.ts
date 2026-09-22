@@ -92,7 +92,6 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
       })
       .where(eq(jobs.id, jobId))
 
-    await reconcileReservedCredits(jobId, job.userId, current.durationSec ?? actualDuration, actualDuration)
     await cacheJobStatus(jobId, { status: 'completed', progress: 65 })
     await invalidateUserStats(job.userId)
 
@@ -251,43 +250,7 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
         .update(jobs)
         .set({ status: 'failed' satisfies JobStatus, errorMessage: msg })
         .where(eq(jobs.id, jobId)),
-      refundReservedCredits(jobId, job.userId),
       cacheJobStatus(jobId, { status: 'failed', error: msg }),
     ])
   }
-}
-
-async function reconcileReservedCredits(
-  jobId: string,
-  userId: string,
-  estimatedDuration: number,
-  actualDuration: number
-): Promise<void> {
-  const delta = actualDuration - estimatedDuration
-  if (delta < 0) {
-    await db
-      .update(users)
-      .set({ creditSeconds: sql`${users.creditSeconds} + ${Math.abs(delta)}` })
-      .where(eq(users.id, userId))
-  } else if (delta > 0) {
-    await db
-      .update(users)
-      .set({ creditSeconds: sql`GREATEST(${users.creditSeconds} - ${delta}, 0)` })
-      .where(eq(users.id, userId))
-  }
-}
-
-async function refundReservedCredits(jobId: string, userId: string): Promise<void> {
-  const [job] = await db
-    .select({ durationSec: jobs.durationSec, status: jobs.status })
-    .from(jobs)
-    .where(eq(jobs.id, jobId))
-    .limit(1)
-
-  if (!job || job.status === 'cancelled' || !job.durationSec || job.durationSec <= 0) return
-
-  await db
-    .update(users)
-    .set({ creditSeconds: sql`${users.creditSeconds} + ${job.durationSec}` })
-    .where(eq(users.id, userId))
 }

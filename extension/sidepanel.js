@@ -16,14 +16,6 @@ function show(node, visible) {
   node.hidden = !visible
 }
 
-function formatCredit(seconds) {
-  if (!Number.isFinite(seconds)) return ''
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.round((seconds % 3600) / 60)
-  if (hours > 0) return `sisa ${hours} jam ${minutes} menit`
-  return `sisa ${minutes} menit`
-}
-
 function formatClock(ms) {
   const total = Math.max(0, Math.floor(ms / 1000))
   const minutes = String(Math.floor(total / 60)).padStart(2, '0')
@@ -60,7 +52,6 @@ async function syncAuth() {
   show(el('mainView'), loggedIn)
   if (me) {
     el('userName').textContent = me.displayName || me.username || me.email
-    el('userCredit').textContent = formatCredit(me.creditSeconds)
   }
   return loggedIn
 }

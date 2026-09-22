@@ -4,7 +4,6 @@ import { motion } from 'framer-motion'
 import {
   SignOut,
   ShieldStar,
-  Coin,
   Clock,
   Files,
   CurrencyDollar,
@@ -329,15 +328,8 @@ export default function Profil() {
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.08 }}
-              className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6"
+              className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6"
             >
-              <StatTile
-                icon={Coin}
-                label="Sisa kredit"
-                value={formatDuration(stats.creditSeconds)}
-                valueSize="2xl"
-                color="amber"
-              />
               <StatTile
                 icon={Microphone}
                 label="Total transkrip"
@@ -621,7 +613,7 @@ function StatTile({
   color,
   badge,
 }: {
-  icon: typeof Coin
+  icon: typeof Microphone
   label: string
   value: string
   valueSize?: 'xl' | '2xl'

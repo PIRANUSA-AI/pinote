@@ -8,7 +8,6 @@ import {
   ShieldStar,
   User as UserIcon,
   CheckCircle,
-  Coin,
   Clipboard,
   Link as LinkIcon,
   ChartLineUp,
@@ -23,7 +22,6 @@ import {
 import { ApiError, api, type ManagedUser } from '../lib/api'
 import { formatRelativeTime, formatDuration } from '../lib/format'
 import { useAuth } from '../hooks/useAuth'
-import { TopupModal } from '../components/TopupModal'
 import { LineChart, BarChart, DonutProgress } from '../components/charts'
 import { useToast } from '../components/Toast'
 
@@ -94,7 +92,6 @@ export default function Admin() {
   const [makeAdmin, setMakeAdmin] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [flash, setFlash] = useState<string | null>(null)
-  const [topupTarget, setTopupTarget] = useState<ManagedUser | null>(null)
 
   const USD_TO_IDR = 16000
 
@@ -181,8 +178,6 @@ export default function Admin() {
       toast(err instanceof Error ? err.message : 'Gagal reset password', 'error')
     }
   }
-
-  const handleTopupCredits = (u: ManagedUser) => setTopupTarget(u)
 
   const handleCopyTaskLink = async (u: ManagedUser) => {
     try {
@@ -519,18 +514,6 @@ export default function Admin() {
                     <span className="text-slate-300">·</span>
                     <p className="text-xs text-ink-muted">dibuat {formatRelativeTime(u.createdAt)}</p>
                   </div>
-                  <div className="flex items-center gap-2 mt-1.5">
-                    <span className={`inline-flex items-center gap-1 text-xs font-semibold tabular px-2 py-0.5 rounded-full ${
-                      u.creditSeconds < 300
-                        ? 'bg-red-50 text-red-600'
-                        : u.creditSeconds < 1800
-                        ? 'bg-amber-50 text-amber-700'
-                        : 'bg-emerald-50 text-emerald-700'
-                    }`}>
-                      <Coin size={11} weight="duotone" />
-                      {formatDuration(u.creditSeconds)}
-                    </span>
-                  </div>
                 </div>
                 <div className="flex items-center gap-0.5 sm:gap-1">
                   <button
@@ -539,13 +522,6 @@ export default function Admin() {
                     title="Salin link tugas"
                   >
                     {u.taskShareToken ? <LinkIcon size={15} /> : <Clipboard size={15} />}
-                  </button>
-                  <button
-                    onClick={() => handleTopupCredits(u)}
-                    className="grid place-items-center w-8 h-8 sm:w-9 sm:h-9 rounded-lg hover:bg-amber-50 hover:text-amber-600 text-slate-400 transition-colors"
-                    title="Topup kredit"
-                  >
-                    <Coin size={15} />
                   </button>
                   <button
                     onClick={() => handleResetPassword(u)}
@@ -569,15 +545,6 @@ export default function Admin() {
         )}
       </section>
 
-      <TopupModal
-        user={topupTarget}
-        onClose={() => setTopupTarget(null)}
-        onSuccess={() => {
-          void loadAll()
-          flashSuccess(`Kredit ditambahkan untuk "${topupTarget?.username}"`)
-          setTopupTarget(null)
-        }}
-      />
     </div>
   )
 }
@@ -589,7 +556,7 @@ function StatCard({
   sub,
   color,
 }: {
-  icon: typeof Coin
+  icon: typeof Clock
   label: string
   value: string
   sub?: string

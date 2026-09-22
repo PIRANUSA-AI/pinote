@@ -34,15 +34,6 @@ function reject(socket: Duplex, status: number, reason: string): void {
   socket.destroy()
 }
 
-async function deductCredits(userId: string, seconds: number): Promise<void> {
-  if (seconds <= 0) return
-  await db
-    .update(users)
-    .set({ creditSeconds: sql`GREATEST(${users.creditSeconds} - ${seconds}, 0)` })
-    .where(eq(users.id, userId))
-    .catch((err) => console.warn('Live credit deduction failed:', err))
-}
-
 function handleConnection(ws: WebSocket, user: User): void {
   let session: QwenRealtimeSession | null = null
   let streamedBytes = 0
@@ -52,12 +43,12 @@ function handleConnection(ws: WebSocket, user: User): void {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload))
   }
 
-  const settle = async () => {
+  const settle = () => {
     if (settled) return
     settled = true
     session?.close()
     session = null
-    await deductCredits(user.id, Math.ceil(streamedBytes / BYTES_PER_SECOND))
+    console.log(`Live session for ${user.id} ended after ${Math.ceil(streamedBytes / BYTES_PER_SECOND)}s of audio`)
   }
 
   const start = (language: 'id' | 'en' | 'auto') => {
@@ -105,13 +96,8 @@ function handleConnection(ws: WebSocket, user: User): void {
     }
   })
 
-  ws.on('close', () => {
-    void settle()
-  })
-
-  ws.on('error', () => {
-    void settle()
-  })
+  ws.on('close', settle)
+  ws.on('error', settle)
 }
 
 export function attachLiveTranscribe(server: Server): void {
@@ -140,7 +126,6 @@ export function attachLiveTranscribe(server: Server): void {
     findSession(token)
       .then((result) => {
         if (!result) return reject(socket, 401, 'Unauthorized')
-        if (result.user.creditSeconds <= 0) return reject(socket, 402, 'Payment Required')
 
         wss.handleUpgrade(req, socket, head, (ws) => {
           handleConnection(ws, result.user)

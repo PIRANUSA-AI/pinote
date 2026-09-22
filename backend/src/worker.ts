@@ -54,16 +54,7 @@ async function recoverStuckTranscribingJobs(): Promise<void> {
       errorMessage: 'Job timeout: transkripsi tidak selesai dalam 3 jam',
     })
     .where(and(eq(jobs.status, 'transcribing'), lt(jobs.startedAt, cutoff)))
-    .returning({ id: jobs.id, userId: jobs.userId, durationSec: jobs.durationSec })
-
-  for (const job of stuck) {
-    if (job.durationSec && job.durationSec > 0) {
-      await db
-        .update(users)
-        .set({ creditSeconds: sql`${users.creditSeconds} + ${job.durationSec}` })
-        .where(eq(users.id, job.userId))
-    }
-  }
+    .returning({ id: jobs.id })
 
   if (stuck.length > 0) {
     console.log(`Recovered ${stuck.length} stuck transcribing job(s):`, stuck.map((j) => j.id))

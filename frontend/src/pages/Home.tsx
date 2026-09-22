@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Plus, ArrowClockwise, Coin, ArrowRight, MicrophoneStage } from '@phosphor-icons/react'
+import { Plus, ArrowClockwise, ArrowRight, MicrophoneStage } from '@phosphor-icons/react'
 import { UploadZone, type Lang } from '../components/UploadZone'
 import { JobStatus } from '../components/JobStatus'
 import { HistoryList } from '../components/HistoryList'
@@ -137,12 +137,6 @@ export default function Home() {
               <p className="eyebrow flex items-center gap-1.5">
                 <MicrophoneStage size={11} weight="fill" /> Hai, {greetingName}
               </p>
-              {user?.creditSeconds !== undefined && (
-                <span className="chip bg-brand-soft text-brand-deep tabular">
-                  <Coin size={11} weight="fill" />
-                  {Math.floor(user.creditSeconds / 60)}m kredit
-                </span>
-              )}
             </div>
             <h1 className="text-4xl sm:text-5xl md:text-6xl tracking-tightest leading-[1] font-semibold text-navy">
               Kamu Rekam.
@@ -168,19 +162,7 @@ export default function Home() {
 
       {showHero && (
         <section id="upload" className="mx-auto max-w-3xl px-4 md:px-8 mt-8 md:mt-10">
-          {user?.creditSeconds === 0 ? (
-            <div className="card p-8 text-center">
-              <div className="grid place-items-center w-14 h-14 rounded-2xl bg-amber-50 border border-amber-200 mx-auto mb-4">
-                <Coin weight="duotone" size={28} className="text-amber-500" />
-              </div>
-              <h3 className="text-lg font-semibold tracking-tight text-navy">Kredit habis</h3>
-              <p className="mt-2 text-sm text-ink-muted leading-relaxed max-w-xs mx-auto">
-                Kamu tidak punya kredit tersisa. Hubungi admin untuk topup dan lanjutkan transkrip.
-              </p>
-            </div>
-          ) : (
-            <UploadZone onStart={handleStart} disabled={state.stage !== 'idle'} />
-          )}
+          <UploadZone onStart={handleStart} disabled={state.stage !== 'idle'} />
         </section>
       )}
 
@@ -201,7 +183,7 @@ export default function Home() {
 
       {/* FAB — mobile only, visible when idle */}
       <AnimatePresence>
-        {showHero && user?.creditSeconds !== 0 && (
+        {showHero && (
           <motion.button
             key="fab"
             initial={{ scale: 0, opacity: 0 }}

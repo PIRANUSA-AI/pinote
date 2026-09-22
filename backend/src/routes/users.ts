@@ -17,13 +17,6 @@ const passwordSchema = z.object({
   newPassword: z.string().min(8, 'Password minimal 8 karakter').max(256),
 })
 
-const MAX_CREDIT_SECONDS = 315_360_000 // 10 tahun
-
-const creditsSchema = z.object({
-  creditSeconds: z.number().int().min(0).max(MAX_CREDIT_SECONDS).optional(),
-  addSeconds: z.number().int().min(1).max(MAX_CREDIT_SECONDS).optional(),
-})
-
 export const usersRouter = new Hono<AppEnv>()
 
 usersRouter.use('*', requireAdmin)
@@ -228,33 +221,6 @@ usersRouter.patch('/:id/password', async (c) => {
   await db.delete(sessions).where(eq(sessions.userId, id))
 
   return c.json({ ok: true })
-})
-
-usersRouter.patch('/:id/credits', async (c) => {
-  const id = c.req.param('id')
-  const body = await c.req.json().catch(() => null)
-  const parsed = creditsSchema.safeParse(body)
-  if (!parsed.success) return c.json({ error: 'Invalid input' }, 400)
-
-  const [current] = await db
-    .select({ creditSeconds: users.creditSeconds })
-    .from(users)
-    .where(eq(users.id, id))
-    .limit(1)
-  if (!current) return c.json({ error: 'User tidak ditemukan' }, 404)
-
-  const newCredits =
-    parsed.data.creditSeconds !== undefined
-      ? parsed.data.creditSeconds
-      : current.creditSeconds + (parsed.data.addSeconds ?? 0)
-
-  const [updated] = await db
-    .update(users)
-    .set({ creditSeconds: Math.max(0, newCredits) })
-    .where(eq(users.id, id))
-    .returning({ id: users.id, creditSeconds: users.creditSeconds })
-
-  return c.json({ ok: true, creditSeconds: updated.creditSeconds })
 })
 
 const displayNameSchema = z.object({

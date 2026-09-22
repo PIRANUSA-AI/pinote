@@ -49,43 +49,23 @@ jobsRouter.post('/', async (c) => {
 
   const user = c.get('user')
 
-  // Reserve the estimated duration atomically so credit cannot go negative.
-  const [reservation] = await db
-    .update(users)
-    .set({ creditSeconds: sql`${users.creditSeconds} - ${parsed.data.durationSec}` })
-    .where(and(eq(users.id, user.id), sql`${users.creditSeconds} >= ${parsed.data.durationSec}`))
-    .returning({ creditSeconds: users.creditSeconds })
-
-  if (!reservation) {
-    return c.json({ error: 'Kredit tidak cukup untuk durasi audio ini. Hubungi admin untuk topup.' }, 402)
-  }
-
   const jobId = nanoid()
   const storageKey = `uploads/${user.id}/${jobId}/${safeFilename(parsed.data.filename)}`
 
-  let created: typeof jobs.$inferSelect
-  try {
-    ;[created] = await db
-      .insert(jobs)
-      .values({
-        id: jobId,
-        userId: user.id,
-        filename: parsed.data.filename,
-        mimeType: mime,
-        sizeBytes: parsed.data.sizeBytes,
-        durationSec: parsed.data.durationSec,
-        language: parsed.data.language ?? 'auto',
-        storageKey,
-        status: 'pending' satisfies JobStatus,
-      })
-      .returning()
-  } catch (err) {
-    await db
-      .update(users)
-      .set({ creditSeconds: sql`${users.creditSeconds} + ${parsed.data.durationSec}` })
-      .where(eq(users.id, user.id))
-    throw err
-  }
+  const [created] = await db
+    .insert(jobs)
+    .values({
+      id: jobId,
+      userId: user.id,
+      filename: parsed.data.filename,
+      mimeType: mime,
+      sizeBytes: parsed.data.sizeBytes,
+      durationSec: parsed.data.durationSec,
+      language: parsed.data.language ?? 'auto',
+      storageKey,
+      status: 'pending' satisfies JobStatus,
+    })
+    .returning()
 
   await cacheJobStatus(jobId, { status: 'pending', progress: 0 })
 
@@ -411,13 +391,6 @@ jobsRouter.delete('/:id', async (c) => {
       .update(jobs)
       .set({ status: 'cancelled' satisfies JobStatus, cancelledAt: new Date() })
       .where(and(eq(jobs.id, id), eq(jobs.userId, user.id)))
-
-    if (job.durationSec && job.durationSec > 0) {
-      await db
-        .update(users)
-        .set({ creditSeconds: sql`${users.creditSeconds} + ${job.durationSec}` })
-        .where(eq(users.id, user.id))
-    }
 
     await cacheJobStatus(id, { status: 'cancelled', progress: 0 })
     return c.json({ ok: true, cancelled: true })

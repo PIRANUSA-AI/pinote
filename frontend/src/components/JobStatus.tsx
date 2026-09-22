@@ -44,7 +44,7 @@ function derivePhase(
       message: job?.status === 'cancelled' ? 'Dibatalkan' : 'Gagal',
       detail:
         job?.status === 'cancelled'
-          ? 'Transkrip dibatalkan dan kredit dikembalikan.'
+          ? 'Transkrip dibatalkan.'
           : job?.error ?? upload.error ?? 'Terjadi kesalahan',
     }
   }

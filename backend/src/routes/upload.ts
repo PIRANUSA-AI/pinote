@@ -66,24 +66,8 @@ uploadRouter.put('/:jobId/storage', async (c) => {
         .update(jobs)
         .set({ status: 'failed' satisfies JobStatus, errorMessage: `Upload gagal: ${msg}` })
         .where(eq(jobs.id, jobId)),
-      refundReservedCredits(jobId, user.id),
       cacheJobStatus(jobId, { status: 'failed', error: msg }),
     ])
     return c.json({ error: 'Gagal menyimpan audio', detail: msg }, 502)
   }
 })
-
-async function refundReservedCredits(jobId: string, userId: string): Promise<void> {
-  const [job] = await db
-    .select({ durationSec: jobs.durationSec, status: jobs.status })
-    .from(jobs)
-    .where(eq(jobs.id, jobId))
-    .limit(1)
-
-  if (!job || job.status === 'cancelled' || !job.durationSec || job.durationSec <= 0) return
-
-  await db
-    .update(users)
-    .set({ creditSeconds: sql`${users.creditSeconds} + ${job.durationSec}` })
-    .where(eq(users.id, userId))
-}

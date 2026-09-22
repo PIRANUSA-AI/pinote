@@ -50,7 +50,6 @@ export interface SessionUser {
   id: string
   username: string
   isAdmin: boolean
-  creditSeconds?: number
   displayName?: string | null
   email?: string | null
 }
@@ -59,7 +58,6 @@ export interface UserStats {
   totalDurationSec: number
   latestDurationSec: number
   totalJobs: number
-  creditSeconds: number
   estimatedCostUSD: number
   memberSince: string | null
 }
@@ -188,7 +186,6 @@ export interface ManagedUser {
   id: string
   username: string
   isAdmin: boolean
-  creditSeconds: number
   displayName: string | null
   taskShareToken: string | null
   createdAt: string

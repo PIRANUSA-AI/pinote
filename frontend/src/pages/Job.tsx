@@ -264,7 +264,7 @@ export default function Job() {
             </h2>
             <p className="mt-2 text-sm text-ink-muted max-w-md mx-auto break-words">
               {job.status === 'cancelled'
-                ? 'Job ini dibatalkan dan kredit estimasi dikembalikan.'
+                ? 'Job ini dibatalkan.'
                 : job.error || 'Terjadi kesalahan tak dikenal.'}
             </p>
             <div className="mt-6 flex items-center justify-center gap-3">
