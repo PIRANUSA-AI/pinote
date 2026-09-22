@@ -14,6 +14,7 @@ let language = 'id'
 let searchQuery = ''
 let matches = []
 let activeMatch = -1
+let notice = ''
 
 function show(node, visible) {
   node.hidden = !visible
@@ -31,6 +32,15 @@ function meetingKind(url) {
   if (url.startsWith('https://meet.google.com/')) return 'Google Meet'
   if (/^https:\/\/[^/]*\.?zoom\.us\//.test(url)) return 'Zoom'
   return null
+}
+
+async function micPermissionState() {
+  try {
+    const status = await navigator.permissions.query({ name: 'microphone' })
+    return status.state
+  } catch {
+    return 'prompt'
+  }
 }
 
 async function loadTab() {
@@ -266,7 +276,7 @@ function renderControls(state) {
     button.className = 'primaryAction grow'
     el('recordLabel').textContent = 'Mulai Rekapin'
     if (kind) {
-      el('tabState').textContent = `${kind} terdeteksi di tab ini`
+      el('tabState').textContent = notice || `${kind} terdeteksi di tab ini`
       el('tabState').className = 'tabState'
       button.disabled = false
     } else {
@@ -294,7 +304,14 @@ async function pullState() {
 }
 
 chrome.runtime.onMessage.addListener((message) => {
-  if (message.target === 'panel' && message.type === 'state') applyState(message.state)
+  if (message.target !== 'panel') return undefined
+  if (message.type === 'state') applyState(message.state)
+  if (message.type === 'micPermission') {
+    notice = message.granted
+      ? 'Mikrofon siap. Tekan Mulai Rekapin.'
+      : 'Mikrofon ditolak. Rekapin tetap jalan, tapi hanya suara peserta lain yang tertangkap.'
+    if (latestState) renderControls(latestState)
+  }
   return undefined
 })
 
@@ -392,6 +409,15 @@ el('recordButton').addEventListener('click', async () => {
 
   await loadTab()
   if (!activeTab?.id) return
+
+  if ((await micPermissionState()) === 'prompt') {
+    notice = 'Izinkan mikrofon di tab yang baru terbuka, lalu tekan Mulai Rekapin lagi.'
+    if (latestState) renderControls(latestState)
+    await chrome.tabs.create({ url: chrome.runtime.getURL(`micPermission.html?returnTab=${activeTab.id}`) })
+    return
+  }
+
+  notice = ''
   el('recordButton').disabled = true
   await chrome.runtime.sendMessage({
     target: 'service',

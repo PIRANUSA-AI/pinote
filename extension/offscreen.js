@@ -36,17 +36,31 @@ async function start({ streamId, language, apiBase }) {
     video: false,
   })
 
+  let micStream = null
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    })
+  } catch (err) {
+    report({ type: 'micUnavailable', message: err instanceof Error ? err.message : String(err) })
+  }
+
   const playbackContext = new AudioContext()
-  const playbackSource = playbackContext.createMediaStreamSource(stream)
-  playbackSource.connect(playbackContext.destination)
+  playbackContext.createMediaStreamSource(stream).connect(playbackContext.destination)
+
+  const mixDestination = playbackContext.createMediaStreamDestination()
+  playbackContext.createMediaStreamSource(stream).connect(mixDestination)
+  if (micStream) playbackContext.createMediaStreamSource(micStream).connect(mixDestination)
 
   const asrContext = new AudioContext({ sampleRate: 16000 })
   await asrContext.audioWorklet.addModule(chrome.runtime.getURL('pcmWorklet.js'))
-  const asrSource = asrContext.createMediaStreamSource(stream)
   const pcmNode = new AudioWorkletNode(asrContext, 'pcmProcessor')
+  const mixer = asrContext.createGain()
+  asrContext.createMediaStreamSource(stream).connect(mixer)
+  if (micStream) asrContext.createMediaStreamSource(micStream).connect(mixer)
   const mute = asrContext.createGain()
   mute.gain.value = 0
-  asrSource.connect(pcmNode)
+  mixer.connect(pcmNode)
   pcmNode.connect(mute)
   mute.connect(asrContext.destination)
 
@@ -79,7 +93,7 @@ async function start({ streamId, language, apiBase }) {
   }
 
   const recorderMime = pickRecorderMime()
-  const recorder = new MediaRecorder(stream, recorderMime ? { mimeType: recorderMime } : undefined)
+  const recorder = new MediaRecorder(mixDestination.stream, recorderMime ? { mimeType: recorderMime } : undefined)
   const chunks = []
   recorder.ondataavailable = (event) => {
     if (event.data && event.data.size > 0) chunks.push(event.data)
@@ -88,6 +102,7 @@ async function start({ streamId, language, apiBase }) {
 
   capture = {
     stream,
+    micStream,
     playbackContext,
     asrContext,
     socket,
@@ -164,6 +179,7 @@ async function stop() {
     await stopRecorder(current.recorder)
   } finally {
     current.stream.getTracks().forEach((track) => track.stop())
+    current.micStream?.getTracks().forEach((track) => track.stop())
     current.playbackContext.close().catch(() => {})
     current.asrContext.close().catch(() => {})
     setTimeout(() => current.socket.close(), 500)

@@ -11,6 +11,7 @@ const state = {
   paused: false,
   pausedAt: null,
   pausedTotalMs: 0,
+  micOn: true,
 }
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
@@ -47,6 +48,7 @@ function reset() {
   state.paused = false
   state.pausedAt = null
   state.pausedTotalMs = 0
+  state.micOn = true
 }
 
 async function ensureOffscreen() {
@@ -161,6 +163,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       broadcast()
     } else if (message.type === 'liveError') {
       state.error = message.message
+      broadcast()
+    } else if (message.type === 'micUnavailable') {
+      state.micOn = false
+      state.error = 'Mikrofon tidak bisa diakses, jadi suara kamu sendiri tidak ikut terekam. Hanya suara peserta lain yang tertangkap.'
       broadcast()
     } else if (message.type === 'uploadStarted') {
       state.status = 'uploading'
