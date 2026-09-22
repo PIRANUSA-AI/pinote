@@ -1,0 +1,1 @@
+ALTER TABLE "jobs" ADD COLUMN "speaker_timeline" jsonb DEFAULT '[]'::jsonb NOT NULL;

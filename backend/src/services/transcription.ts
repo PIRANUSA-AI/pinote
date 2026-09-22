@@ -46,6 +46,7 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
     const { segments, detectedLanguage, durationSec: actualDuration } = await transcribeFromUrl({
       audioUrl,
       language: job.language as 'id' | 'en' | 'auto',
+      speakerTimeline: job.speakerTimeline ?? [],
       onProgress: async (step) => {
         console.log(`[${jobId}] ${step}`)
         await cacheJobStatus(jobId, {

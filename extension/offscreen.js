@@ -216,6 +216,10 @@ async function start({ streamId, mediaSource, language, apiBase, source, skipIns
   recorder.ondataavailable = (event) => {
     if (event.data && event.data.size > 0) chunks.push(event.data)
   }
+  recorder.onerror = (event) => {
+    const reason = event?.error?.message ?? event?.error?.name ?? 'penyebab tidak diketahui'
+    report({ type: 'liveError', message: `Perekam audio berhenti sendiri: ${reason}. Hentikan lalu mulai lagi.` })
+  }
   recorder.start(1000)
 
   capture = {
@@ -324,6 +328,7 @@ async function createJob(job) {
         source: job.source,
         skipInsights: job.skipInsights,
         attendance: job.attendance,
+        speakerTimeline: job.speakerTimeline,
       }),
     })
   } catch {
@@ -405,7 +410,7 @@ async function runUpload() {
   if (delivered && uploadQueue.length > 0) void runUpload()
 }
 
-async function stop(attendance) {
+async function stop(attendance, speakerTimeline) {
   if (!capture) return { ok: false, error: 'Tidak ada perekaman aktif' }
   const current = capture
   current.stopping = true
@@ -427,7 +432,12 @@ async function stop(attendance) {
   }
 
   const blob = new Blob(current.chunks, { type: current.recorderMime })
-  if (blob.size === 0) return { ok: false, error: 'Rekaman kosong' }
+  if (blob.size === 0) {
+    return {
+      ok: false,
+      error: `Rekaman kosong, tidak ada audio yang tertangkap (${current.chunks.length} potongan, perekam ${current.recorder.state}, format ${current.recorderMime}). Pastikan tab yang kamu pilih di dialog Chrome adalah tab rapat dan opsi bagikan audio tab menyala.`,
+    }
+  }
 
   const descriptor = uploadDescriptor(current.recorderMime)
   const stamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)
@@ -443,6 +453,7 @@ async function stop(attendance) {
     source: current.source,
     skipInsights: current.skipInsights,
     attendance: Array.isArray(attendance) ? attendance : [],
+    speakerTimeline: Array.isArray(speakerTimeline) ? speakerTimeline : [],
     jobId: null,
     uploadUrl: null,
   })
@@ -520,7 +531,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'stopCapture') {
-    stop(message.attendance)
+    stop(message.attendance, message.speakerTimeline)
       .then((result) => sendResponse(result))
       .catch((err) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }))
     return true

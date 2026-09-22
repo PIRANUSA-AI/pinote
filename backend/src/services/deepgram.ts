@@ -70,7 +70,49 @@ function buildUrl(language: Language): string {
   return `${DEEPGRAM_BASE_URL}/listen?${params.toString()}`
 }
 
-export function utterancesToSegments(utterances: DeepgramUtterance[]): TranscriptSegment[] {
+export interface SpeakerSlot {
+  name: string
+  start: number
+  end: number
+}
+
+export function nameSpeakers(utterances: DeepgramUtterance[], timeline: SpeakerSlot[]): Map<number, string> {
+  const named = new Map<number, string>()
+  if (timeline.length === 0) return named
+
+  const scores: Array<{ id: number; name: string; overlap: number }> = []
+  const totals = new Map<string, number>()
+
+  for (const utterance of utterances) {
+    const start = utterance.start ?? 0
+    const end = utterance.end ?? start
+    const id = utterance.speaker ?? 0
+    for (const slot of timeline) {
+      const overlap = Math.min(end, slot.end) - Math.max(start, slot.start)
+      if (overlap <= 0) continue
+      const key = `${id}|${slot.name}`
+      totals.set(key, (totals.get(key) ?? 0) + overlap)
+    }
+  }
+
+  for (const [key, overlap] of totals) {
+    const divider = key.indexOf('|')
+    scores.push({ id: Number(key.slice(0, divider)), name: key.slice(divider + 1), overlap })
+  }
+
+  scores.sort((a, b) => b.overlap - a.overlap)
+
+  const usedNames = new Set<string>()
+  for (const row of scores) {
+    if (named.has(row.id) || usedNames.has(row.name)) continue
+    named.set(row.id, row.name)
+    usedNames.add(row.name)
+  }
+
+  return named
+}
+
+export function utterancesToSegments(utterances: DeepgramUtterance[], named: Map<number, string> = new Map()): TranscriptSegment[] {
   const usable = utterances
     .map((u) => ({
       start: u.start ?? 0,
@@ -90,7 +132,7 @@ export function utterancesToSegments(utterances: DeepgramUtterance[]): Transcrip
     segments.push({
       start: formatTimestamp(current.start),
       end: formatTimestamp(current.end),
-      speaker: `Speaker ${current.speaker + 1}`,
+      speaker: named.get(current.speaker) ?? `Speaker ${current.speaker + 1}`,
       text: current.parts.join(' ').trim(),
     })
   }
@@ -155,6 +197,7 @@ export async function transcribeFromUrl(args: {
   audioUrl: string
   language: Language
   onProgress?: (step: string) => void
+  speakerTimeline?: SpeakerSlot[]
 }): Promise<{ segments: TranscriptSegment[]; detectedLanguage: string | undefined; durationSec: number }> {
   args.onProgress?.('Transcribing audio...')
 
@@ -162,7 +205,11 @@ export async function transcribeFromUrl(args: {
   args.onProgress?.('Processing speaker labels...')
 
   const utterances = result.results?.utterances ?? []
-  const segments = utterancesToSegments(utterances)
+  const named = nameSpeakers(utterances, args.speakerTimeline ?? [])
+  if (named.size > 0) {
+    console.log(`Deepgram speaker mapped to real names: ${[...named.values()].join(', ')}`)
+  }
+  const segments = utterancesToSegments(utterances, named)
 
   if (segments.length === 0) throw new Error('Deepgram returned empty transcript')
 

@@ -23,6 +23,16 @@ const createSchema = z.object({
   source: z.enum(['upload', 'meet', 'zoom', 'whatsapp']).optional(),
   skipInsights: z.boolean().optional(),
   attendance: z.array(z.string().min(1).max(120)).max(50).optional(),
+  speakerTimeline: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(120),
+        start: z.number().nonnegative(),
+        end: z.number().nonnegative(),
+      })
+    )
+    .max(2000)
+    .optional(),
 })
 
 export const jobsRouter = new Hono<AppEnv>()
@@ -71,6 +81,7 @@ jobsRouter.post('/', async (c) => {
       isPrivate: parsed.data.source === 'whatsapp',
       skipInsights: parsed.data.skipInsights ?? false,
       attendance: parsed.data.attendance ?? [],
+      speakerTimeline: parsed.data.speakerTimeline ?? [],
     })
     .returning()
 

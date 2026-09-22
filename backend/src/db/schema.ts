@@ -66,6 +66,10 @@ export const jobs = pgTable(
     source: text('source').notNull().default('upload'),
     isPrivate: boolean('is_private').notNull().default(false),
     skipInsights: boolean('skip_insights').notNull().default(false),
+    speakerTimeline: jsonb('speaker_timeline')
+      .$type<Array<{ name: string; start: number; end: number }>>()
+      .notNull()
+      .default([]),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     uploadedAt: timestamp('uploaded_at', { withTimezone: true }),
     queuedAt: timestamp('queued_at', { withTimezone: true }),

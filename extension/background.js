@@ -261,6 +261,19 @@ async function startRecording(tabId, language, source, mode, skipInsights) {
   }
 }
 
+function buildSpeakerTimeline() {
+  if (!state.startedAt || state.pausedTotalMs > 0) return []
+  return state.lines
+    .filter((line) => line.speaker && line.speaker !== 'Peserta')
+    .map((line) => ({
+      name: line.speaker,
+      start: Math.max(0, (line.at - state.startedAt) / 1000),
+      end: Math.max(0, ((line.endAt ?? line.at) - state.startedAt) / 1000),
+    }))
+    .filter((slot) => slot.end > slot.start)
+    .slice(-2000)
+}
+
 async function cancelRecording() {
   if (state.status !== 'recording' && state.status !== 'starting') {
     return { ok: false, error: 'Tidak ada sesi aktif' }
@@ -328,6 +341,7 @@ async function stopRecording() {
       target: 'offscreen',
       type: 'stopCapture',
       attendance: state.attendance ?? [],
+      speakerTimeline: buildSpeakerTimeline(),
     })
     if (!response || !response.ok) {
       throw new Error(response && response.error ? response.error : 'Gagal menyimpan rekaman')
