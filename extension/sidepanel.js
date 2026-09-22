@@ -360,7 +360,12 @@ function renderControls(state) {
   show(el('pauseButton'), recording)
   show(el('cancelButton'), recording)
   show(el('insightRow'), !recording)
-  show(el('captionHint'), recording && state.source === 'meet' && state.captionsOn === false)
+  const attendance = state.attendance ?? []
+  const onMeet = state.source === 'meet'
+  show(el('watcherHint'), recording && onMeet && !state.watcherOn)
+  show(el('captionHint'), recording && onMeet && state.watcherOn && state.captionsOn === false && attendance.length > 2)
+  if (attendance.length > 0) el('attendanceRow').textContent = `Hadir: ${attendance.join(', ')}`
+  show(el('attendanceRow'), recording && attendance.length > 0)
   el('sheet').className = recording ? 'sheet compact' : 'sheet'
 
   if (recording) {

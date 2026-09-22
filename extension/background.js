@@ -24,6 +24,8 @@ const state = {
   upload: null,
   background: null,
   captionsOn: null,
+  watcherOn: false,
+  attendance: [],
   utteranceStart: null,
 }
 
@@ -46,6 +48,7 @@ chrome.runtime.onInstalled.addListener(() => {
 let speakerEvents = []
 let selfName = 'Saya'
 let lastLiveError = null
+let roster = []
 
 chrome.storage.local
   .get('displayName')
@@ -98,7 +101,8 @@ function resolveSpeaker(source, from, to) {
   if (source === 'self') return selfName
   const name = dominantName(from, to)
   if (name) return name
-  return source === 'remote' ? 'Peserta' : null
+  if (roster.length === 1) return roster[0]
+  return 'Peserta'
 }
 
 function sourceFor(url) {
@@ -181,6 +185,7 @@ function reset() {
   state.live = null
   state.upload = null
   state.captionsOn = null
+  state.attendance = []
   state.utteranceStart = null
 }
 
@@ -245,6 +250,7 @@ async function startRecording(tabId, language, source, mode, skipInsights) {
     state.status = 'recording'
     state.startedAt = Date.now()
     broadcast()
+    void ensureWatcher(tabId)
     return { ok: true }
   } catch (err) {
     state.status = 'error'
@@ -266,6 +272,13 @@ async function cancelRecording() {
   broadcast()
   chrome.storage.local.remove('liveState').catch(() => {})
   return { ok: true }
+}
+
+async function ensureWatcher(tabId) {
+  if (!tabId) return
+  const alive = await chrome.tabs.sendMessage(tabId, { target: 'content', type: 'ping' }).catch(() => null)
+  if (alive?.ok) return
+  await chrome.scripting.executeScript({ target: { tabId }, files: ['speakerWatch.js'] }).catch(() => {})
 }
 
 async function startFromInvocation(tab) {
@@ -311,7 +324,11 @@ async function stopRecording() {
   broadcast()
 
   try {
-    const response = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'stopCapture' })
+    const response = await chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: 'stopCapture',
+      attendance: state.attendance ?? [],
+    })
     if (!response || !response.ok) {
       throw new Error(response && response.error ? response.error : 'Gagal menyimpan rekaman')
     }
@@ -443,6 +460,23 @@ async function handleServiceMessage(message) {
   if (message.type === 'getState') return { ...state }
   if (message.type === 'speaker') {
     noteSpeaker(message.name ?? null)
+    return { ok: true }
+  }
+  if (message.type === 'roster') {
+    const names = Array.isArray(message.names) ? message.names.filter((n) => typeof n === 'string').slice(0, 50) : []
+    roster = names
+    const attendance = message.self ? [message.self, ...names] : names
+    if (JSON.stringify(state.attendance) !== JSON.stringify(attendance)) {
+      state.attendance = attendance
+      broadcast()
+    }
+    return { ok: true }
+  }
+  if (message.type === 'watcher') {
+    if (state.watcherOn !== message.on) {
+      state.watcherOn = message.on
+      broadcast()
+    }
     return { ok: true }
   }
   if (message.type === 'captions') {

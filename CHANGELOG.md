@@ -15,6 +15,9 @@ Tulis rilis terbaru paling atas. Setiap rilis diawali baris `## versi · tanggal
 * Nama pembicara dibaca dari teks otomatis Google Meet, jadi baris transkrip memakai nama asli peserta
 * Tombol Batalkan saat merekam, untuk membuang rekaman tanpa mengirimnya
 * Pilihan mematikan ringkasan dan tugas otomatis, kalau kamu cuma mau transkripnya saja
+* Daftar hadir rapat dibaca dari Google Meet dan ikut tersimpan bersama rekaman
+* Kalau rapat cuma berdua, lawan bicara langsung dikenali namanya tanpa perlu teks otomatis
+* Transkrip tidak lagi menyelipkan bahasa asing ketika bahasa sudah dipilih
 
 ## 0.8.0 · 22 September 2026
 * Halaman unduh resmi dengan panduan pemasangan langkah demi langkah untuk Chrome dan Edge

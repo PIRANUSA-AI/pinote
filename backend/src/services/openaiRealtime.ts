@@ -15,6 +15,16 @@ export interface LiveTranscriptionHandlers {
   onClose: () => void
 }
 
+const FOREIGN_SCRIPT = /[Ѐ-ӿ؀-ۿ฀-๿぀-ヿ一-鿿가-힯]/g
+
+function mostlyForeign(text: string): boolean {
+  const foreign = text.match(FOREIGN_SCRIPT)
+  if (!foreign) return false
+  const letters = text.replace(/[\s\d.,!?;:'"()[\]{}]/g, '')
+  if (letters.length === 0) return true
+  return foreign.length / letters.length > 0.3
+}
+
 interface RealtimeEvent {
   type?: string
   delta?: string
@@ -128,13 +138,18 @@ export class OpenAiRealtimeSession {
         const key = event.item_id ?? 'current'
         const text = `${this.partials.get(key) ?? ''}${event.delta ?? ''}`
         this.partials.set(key, text)
-        if (text.trim()) this.handlers.onPartial(text.trim())
+        if (text.trim() && !this.isHallucination(text)) this.handlers.onPartial(text.trim())
         return
       }
       case 'conversation.item.input_audio_transcription.completed': {
         this.partials.delete(event.item_id ?? 'current')
         const text = (event.transcript ?? '').trim()
-        if (text) this.handlers.onFinal(text)
+        if (!text) return
+        if (this.isHallucination(text)) {
+          console.warn(`Live transcript dibuang karena bukan bahasa ${this.language}: ${text.slice(0, 60)}`)
+          return
+        }
+        this.handlers.onFinal(text)
         return
       }
       case 'error':
@@ -143,6 +158,11 @@ export class OpenAiRealtimeSession {
       default:
         return
     }
+  }
+
+  private isHallucination(text: string): boolean {
+    if (this.language === 'auto') return false
+    return mostlyForeign(text)
   }
 
   private markReady(): void {

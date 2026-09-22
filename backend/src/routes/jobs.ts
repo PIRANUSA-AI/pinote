@@ -22,6 +22,7 @@ const createSchema = z.object({
   language: z.enum(['id', 'en', 'auto']).optional(),
   source: z.enum(['upload', 'meet', 'zoom', 'whatsapp']).optional(),
   skipInsights: z.boolean().optional(),
+  attendance: z.array(z.string().min(1).max(120)).max(50).optional(),
 })
 
 export const jobsRouter = new Hono<AppEnv>()
@@ -69,6 +70,7 @@ jobsRouter.post('/', async (c) => {
       source: parsed.data.source ?? 'upload',
       isPrivate: parsed.data.source === 'whatsapp',
       skipInsights: parsed.data.skipInsights ?? false,
+      attendance: parsed.data.attendance ?? [],
     })
     .returning()
 

@@ -323,6 +323,7 @@ async function createJob(job) {
         language: job.language,
         source: job.source,
         skipInsights: job.skipInsights,
+        attendance: job.attendance,
       }),
     })
   } catch {
@@ -404,7 +405,7 @@ async function runUpload() {
   if (delivered && uploadQueue.length > 0) void runUpload()
 }
 
-async function stop() {
+async function stop(attendance) {
   if (!capture) return { ok: false, error: 'Tidak ada perekaman aktif' }
   const current = capture
   current.stopping = true
@@ -441,6 +442,7 @@ async function stop() {
     language: current.language,
     source: current.source,
     skipInsights: current.skipInsights,
+    attendance: Array.isArray(attendance) ? attendance : [],
     jobId: null,
     uploadUrl: null,
   })
@@ -518,7 +520,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'stopCapture') {
-    stop()
+    stop(message.attendance)
       .then((result) => sendResponse(result))
       .catch((err) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }))
     return true

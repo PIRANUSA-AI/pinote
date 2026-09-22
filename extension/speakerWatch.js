@@ -19,6 +19,7 @@ const isMeet = location.hostname === 'meet.google.com'
 let timer = null
 let lastName = null
 let lastCaptionsOn = null
+let lastRoster = ''
 let watchingSince = 0
 let enableTried = false
 
@@ -107,6 +108,22 @@ function captionSpeaker() {
   return { name: null, rows: rows.length }
 }
 
+function meetRoster() {
+  const names = []
+  let self = null
+  for (const tile of document.querySelectorAll('[data-participant-id]')) {
+    const selfNode = tile.querySelector('[data-self-name]')
+    const name = cleanName(selfNode?.textContent) ?? structuralName(tile)
+    if (!name) continue
+    if (selfNode) {
+      self = name
+      continue
+    }
+    if (!names.includes(name)) names.push(name)
+  }
+  return { names, self }
+}
+
 function tileSpeaker() {
   for (const tile of document.querySelectorAll('[data-participant-id]')) {
     let speaking = false
@@ -144,12 +161,14 @@ function send(payload) {
 function tick() {
   let name = null
   let captionsOn = null
+  let roster = null
 
   try {
     if (isMeet) {
       const caption = captionSpeaker()
       captionsOn = caption.rows > 0
       name = caption.name ?? tileSpeaker()
+      roster = meetRoster()
       if (!captionsOn && Date.now() - watchingSince > CAPTION_GRACE_MS) tryEnableCaptions()
     } else {
       name = tileSpeaker()
@@ -163,6 +182,14 @@ function tick() {
     send({ type: 'captions', on: captionsOn })
   }
 
+  if (roster) {
+    const stamp = JSON.stringify(roster)
+    if (stamp !== lastRoster) {
+      lastRoster = stamp
+      send({ type: 'roster', names: roster.names, self: roster.self })
+    }
+  }
+
   if (name === lastName) return
   lastName = name
   send({ type: 'speaker', name })
@@ -172,17 +199,26 @@ function setWatching(on) {
   if (on && !timer) {
     lastName = null
     lastCaptionsOn = null
+    lastRoster = ''
     enableTried = false
     watchingSince = Date.now()
     timer = setInterval(tick, POLL_MS)
+    send({ type: 'watcher', on: true })
     return
   }
   if (!on && timer) {
     clearInterval(timer)
     timer = null
     lastName = null
+    send({ type: 'watcher', on: false })
   }
 }
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.target !== 'content' || message.type !== 'ping') return undefined
+  sendResponse({ ok: true, watching: Boolean(timer) })
+  return undefined
+})
 
 chrome.storage.local
   .get('liveState')
