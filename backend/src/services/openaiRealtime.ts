@@ -2,7 +2,8 @@ import WebSocket from 'ws'
 
 const OPENAI_REALTIME_URL = process.env.OPENAI_REALTIME_URL ?? 'wss://api.openai.com/v1/realtime?intent=transcription'
 const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL ?? 'gpt-live-transcribe'
-const SILENCE_MS = Number(process.env.OPENAI_REALTIME_SILENCE_MS ?? 900)
+const MAX_TURN_MS = Number(process.env.OPENAI_REALTIME_MAX_TURN_MS ?? 8000)
+const MIN_COMMIT_BYTES = Number(process.env.OPENAI_REALTIME_MIN_COMMIT_BYTES ?? 12000)
 
 export const LIVE_SAMPLE_RATE = Number(process.env.OPENAI_REALTIME_SAMPLE_RATE ?? 24000)
 
@@ -30,6 +31,8 @@ export class OpenAiRealtimeSession {
   private closed = false
   private retriedWithBeta = false
   private partials = new Map<string, string>()
+  private bytesSinceCommit = 0
+  private turnTimer: NodeJS.Timeout | null = null
 
   constructor(
     private readonly language: 'id' | 'en' | 'auto',
@@ -98,7 +101,7 @@ export class OpenAiRealtimeSession {
             input: {
               format: { type: 'audio/pcm', rate: this.sampleRate },
               transcription,
-              turn_detection: { type: 'server_vad', silence_duration_ms: SILENCE_MS },
+              turn_detection: null,
             },
           },
         },
@@ -146,7 +149,19 @@ export class OpenAiRealtimeSession {
     if (this.ready) return
     this.ready = true
     this.flushPending()
+    this.turnTimer = setInterval(() => this.commitTurn(), MAX_TURN_MS)
     this.handlers.onReady()
+  }
+
+  private commitTurn(): void {
+    if (this.closed || !this.ready) return
+    if (this.bytesSinceCommit < MIN_COMMIT_BYTES) return
+    this.bytesSinceCommit = 0
+    this.rawSend(JSON.stringify({ type: 'input_audio_buffer.commit' }))
+  }
+
+  flush(): void {
+    this.commitTurn()
   }
 
   private rawSend(payload: string): void {
@@ -164,6 +179,7 @@ export class OpenAiRealtimeSession {
       type: 'input_audio_buffer.append',
       audio: chunk.toString('base64'),
     })
+    this.bytesSinceCommit += chunk.length
     if (!this.ready) {
       if (this.pending.length < 200) this.pending.push(payload)
       return
@@ -172,12 +188,13 @@ export class OpenAiRealtimeSession {
   }
 
   finish(): void {
-    if (this.closed || !this.ready) return
-    this.rawSend(JSON.stringify({ type: 'input_audio_buffer.commit' }))
+    this.commitTurn()
   }
 
   close(): void {
     this.closed = true
+    if (this.turnTimer) clearInterval(this.turnTimer)
+    this.turnTimer = null
     this.pending = []
     this.partials.clear()
     if (this.socket && this.socket.readyState <= WebSocket.OPEN) this.socket.close()

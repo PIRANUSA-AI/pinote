@@ -28,6 +28,19 @@
   display: none !important;
 }
 
+body {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.liveLine,
+.liveLine *,
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 html,
 body {
   height: 100%;

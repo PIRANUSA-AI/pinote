@@ -109,6 +109,11 @@ function handleConnection(ws: WebSocket, user: User): void {
       return
     }
 
+    if (message.type === 'flush') {
+      session?.flush()
+      return
+    }
+
     if (message.type === 'stop') {
       session?.finish()
       return

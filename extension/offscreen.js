@@ -5,6 +5,7 @@ const UPLOAD_TIMEOUT_MS = 20 * 60 * 1000
 const ENERGY_POLL_MS = 100
 const SPEECH_FLOOR = 0.012
 const SELF_DOMINANCE = 1.4
+const SILENCE_FLUSH_MS = 700
 
 let capture = null
 let uploadQueue = []
@@ -240,6 +241,8 @@ async function start({ streamId, mediaSource, language, apiBase, source, skipIns
     tabMeter: createMeter(playbackContext, stream),
     energy: { mic: 0, tab: 0 },
     energyTimer: null,
+    lastVoiceAt: 0,
+    awaitingFlush: false,
   }
 
   capture.energyTimer = setInterval(() => {
@@ -247,7 +250,19 @@ async function start({ streamId, mediaSource, language, apiBase, source, skipIns
     if (!current || current.paused || current.stopping) return
     const mic = current.micMeter ? meterLevel(current.micMeter) : 0
     const tab = current.tabMeter ? meterLevel(current.tabMeter) : 0
-    if (mic < SPEECH_FLOOR && tab < SPEECH_FLOOR) return
+
+    if (mic < SPEECH_FLOOR && tab < SPEECH_FLOOR) {
+      if (!current.awaitingFlush) return
+      if (Date.now() - current.lastVoiceAt < SILENCE_FLUSH_MS) return
+      current.awaitingFlush = false
+      if (current.socket && current.socket.readyState === WebSocket.OPEN) {
+        current.socket.send(JSON.stringify({ type: 'flush' }))
+      }
+      return
+    }
+
+    current.lastVoiceAt = Date.now()
+    current.awaitingFlush = true
     current.energy.mic += mic
     current.energy.tab += tab
   }, ENERGY_POLL_MS)
