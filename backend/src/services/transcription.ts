@@ -2,7 +2,8 @@ import { eq, sql } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { db } from '../db/client.js'
 import { actionItems, jobs, users, type JobStatus, type TranscriptPayload } from '../db/schema.js'
-import { transcribeFromUrl } from './qwen.js'
+import { hasDeepgramKey, transcribeFromUrl as transcribeWithDeepgram } from './deepgram.js'
+import { transcribeFromUrl as transcribeWithQwen } from './qwen.js'
 import { polishTranscript, generateInsights } from './insights.js'
 import { cacheJobStatus, invalidateUserStats } from './cache.js'
 import { createDownloadUrl } from './storage.js'
@@ -16,6 +17,9 @@ const PROGRESS_BY_STEP: Record<string, number> = {
   'Refining transcript...': 75,
   'Generating summary...': 85,
 }
+
+const transcribeFromUrl: typeof transcribeWithDeepgram = (args) =>
+  hasDeepgramKey() ? transcribeWithDeepgram(args) : transcribeWithQwen(args)
 
 function stepProgress(step: string): number {
   const exact = PROGRESS_BY_STEP[step]

@@ -2,6 +2,17 @@
 
 Tulis rilis terbaru paling atas. Setiap rilis diawali baris `## versi · tanggal`, lalu setiap perubahan diawali `* `.
 
+## 0.9.0 · 22 September 2026
+* Tombol Mulai Rekapin kini selalu jalan. Chrome menampilkan dialog pilih tab sekali, lalu perekaman dimulai
+* Jalur cepat tanpa dialog: klik kanan di halaman rapat lalu pilih Mulai Rekapin, atau tekan Ctrl+Shift+U
+* Rekaman berhenti dan terkirim otomatis kalau tab rapat ditutup atau berbagi tab dihentikan
+* Pilihan bahasa tersimpan, jadi tidak perlu diatur ulang setiap kali panel dibuka
+* Transkrip langsung pindah ke mesin OpenAI, teksnya mengalir per kata dan tidak lagi menunggu satu kalimat selesai
+* Tiap baris transkrip kini diberi nama. Suara kamu dikenali dari mikrofon, nama peserta lain dibaca dari halaman rapat
+* Transkrip final setelah rapat pindah ke Deepgram dengan pemisahan pembicara
+* Kalimat pendek dari pembicara yang sama digabung jadi satu baris, tidak lagi pecah tiap beberapa kata
+* Pengiriman rekaman berjalan di latar belakang, jadi kamu bisa langsung merekam rapat berikutnya tanpa menunggu
+
 ## 0.8.0 · 22 September 2026
 * Halaman unduh resmi dengan panduan pemasangan langkah demi langkah untuk Chrome dan Edge
 * Panel memberi tahu bila ada versi extension yang lebih baru

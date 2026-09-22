@@ -2,9 +2,12 @@ const MAX_RETRIES = 15
 const RETRY_STEP_MS = 5000
 const CREATE_TIMEOUT_MS = 15000
 const UPLOAD_TIMEOUT_MS = 20 * 60 * 1000
+const ENERGY_POLL_MS = 100
+const SPEECH_FLOOR = 0.012
+const SELF_DOMINANCE = 1.4
 
 let capture = null
-let pendingUpload = null
+let uploadQueue = []
 let uploadRunning = false
 
 function report(payload) {
@@ -13,6 +16,33 @@ function report(payload) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function createMeter(context, stream) {
+  const analyser = context.createAnalyser()
+  analyser.fftSize = 512
+  context.createMediaStreamSource(stream).connect(analyser)
+  return { analyser, data: new Uint8Array(analyser.fftSize) }
+}
+
+function meterLevel(meter) {
+  meter.analyser.getByteTimeDomainData(meter.data)
+  let sum = 0
+  for (let i = 0; i < meter.data.length; i++) {
+    const value = (meter.data[i] - 128) / 128
+    sum += value * value
+  }
+  return Math.sqrt(sum / meter.data.length)
+}
+
+function takeSpeakerSource() {
+  const current = capture
+  if (!current) return null
+  const { mic, tab } = current.energy
+  current.energy = { mic: 0, tab: 0 }
+  if (mic <= 0 && tab <= 0) return null
+  if (!current.micMeter) return 'remote'
+  return mic > tab * SELF_DOMINANCE ? 'self' : 'remote'
 }
 
 function retryDelay(retry) {
@@ -74,7 +104,7 @@ function connectLive() {
   socket.addEventListener('open', () => {
     if (current.stopping) return
     current.liveRetry = 0
-    socket.send(JSON.stringify({ type: 'start', language: current.language }))
+    socket.send(JSON.stringify({ type: 'start', language: current.language, sampleRate: current.sampleRate }))
     report({ type: 'liveStatus', status: 'connected' })
   })
 
@@ -86,7 +116,7 @@ function connectLive() {
       return
     }
     if (message.type === 'partial') report({ type: 'livePartial', text: message.text })
-    else if (message.type === 'final') report({ type: 'liveFinal', text: message.text })
+    else if (message.type === 'final') report({ type: 'liveFinal', text: message.text, speakerSource: takeSpeakerSource() })
     else if (message.type === 'error') report({ type: 'liveError', message: message.message })
     else if (message.type === 'upstreamClosed' && !current.stopping) socket.close()
   })
@@ -118,18 +148,37 @@ function scheduleLiveReconnect(current) {
   current.liveTimer = setTimeout(() => connectLive(), delay)
 }
 
-async function start({ streamId, language, apiBase, source }) {
-  if (capture) throw new Error('Perekaman sudah berjalan')
-  if (uploadRunning || pendingUpload) throw new Error('Rekaman sebelumnya masih dikirim. Tunggu sampai selesai.')
+async function captureTab(streamId, mediaSource) {
+  const audio = { mandatory: { chromeMediaSource: mediaSource, chromeMediaSourceId: streamId } }
+  let stream
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio, video: false })
+  } catch (err) {
+    if (mediaSource !== 'desktop') throw err
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio,
+      video: { mandatory: { chromeMediaSource: mediaSource, chromeMediaSourceId: streamId } },
+    })
+    stream.getVideoTracks().forEach((track) => {
+      stream.removeTrack(track)
+      track.stop()
+    })
+  }
+  if (stream.getAudioTracks().length === 0) {
+    stream.getTracks().forEach((track) => track.stop())
+    throw new Error('Audio tab tidak ikut dibagikan. Ulangi lalu nyalakan opsi bagikan audio tab di dialog Chrome.')
+  }
+  return stream
+}
 
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      mandatory: {
-        chromeMediaSource: 'tab',
-        chromeMediaSourceId: streamId,
-      },
-    },
-    video: false,
+async function start({ streamId, mediaSource, language, apiBase, source }) {
+  if (capture) throw new Error('Perekaman sudah berjalan')
+
+  const stream = await captureTab(streamId, mediaSource ?? 'tab')
+  stream.getAudioTracks().forEach((track) => {
+    track.addEventListener('ended', () => {
+      if (capture && capture.stream === stream && !capture.stopping) report({ type: 'sourceEnded' })
+    })
   })
 
   let micStream = null
@@ -148,7 +197,7 @@ async function start({ streamId, language, apiBase, source }) {
   playbackContext.createMediaStreamSource(stream).connect(mixDestination)
   if (micStream) playbackContext.createMediaStreamSource(micStream).connect(mixDestination)
 
-  const asrContext = new AudioContext({ sampleRate: 16000 })
+  const asrContext = new AudioContext({ sampleRate: 24000 })
   await asrContext.audioWorklet.addModule(chrome.runtime.getURL('pcmWorklet.js'))
   const pcmNode = new AudioWorkletNode(asrContext, 'pcmProcessor')
   const mixer = asrContext.createGain()
@@ -177,6 +226,7 @@ async function start({ streamId, language, apiBase, source }) {
     recorder,
     chunks,
     recorderMime: recorderMime || 'audio/webm',
+    sampleRate: asrContext.sampleRate,
     startedAt: Date.now(),
     language,
     apiBase,
@@ -185,7 +235,21 @@ async function start({ streamId, language, apiBase, source }) {
     stopping: false,
     liveRetry: 0,
     liveTimer: null,
+    micMeter: micStream ? createMeter(playbackContext, micStream) : null,
+    tabMeter: createMeter(playbackContext, stream),
+    energy: { mic: 0, tab: 0 },
+    energyTimer: null,
   }
+
+  capture.energyTimer = setInterval(() => {
+    const current = capture
+    if (!current || current.paused || current.stopping) return
+    const mic = current.micMeter ? meterLevel(current.micMeter) : 0
+    const tab = current.tabMeter ? meterLevel(current.tabMeter) : 0
+    if (mic < SPEECH_FLOOR && tab < SPEECH_FLOOR) return
+    current.energy.mic += mic
+    current.energy.tab += tab
+  }, ENERGY_POLL_MS)
 
   pcmNode.port.onmessage = (event) => {
     const current = capture
@@ -297,11 +361,13 @@ function friendlyFailure(err) {
 }
 
 async function runUpload() {
-  const job = pendingUpload
-  if (!job || uploadRunning) return
+  if (uploadRunning) return
+  const job = uploadQueue[0]
+  if (!job) return
   uploadRunning = true
-  report({ type: 'uploadStatus', status: 'uploading' })
+  report({ type: 'uploadStatus', status: 'uploading', queued: uploadQueue.length })
 
+  let delivered = false
   try {
     if (!job.jobId) {
       const created = await withRetries(() => createJob(job))
@@ -309,13 +375,16 @@ async function runUpload() {
       job.uploadUrl = created.uploadUrl
     }
     await withRetries(() => putAudio(job))
-    pendingUpload = null
-    report({ type: 'uploadStatus', status: 'done', jobId: job.jobId })
+    uploadQueue.shift()
+    delivered = true
+    report({ type: 'uploadStatus', status: 'done', jobId: job.jobId, queued: uploadQueue.length })
   } catch (err) {
     report({ type: 'uploadStatus', status: 'failed', message: friendlyFailure(err) })
   } finally {
     uploadRunning = false
   }
+
+  if (delivered && uploadQueue.length > 0) void runUpload()
 }
 
 async function stop() {
@@ -323,6 +392,7 @@ async function stop() {
   const current = capture
   current.stopping = true
   clearTimeout(current.liveTimer)
+  clearInterval(current.energyTimer)
   capture = null
 
   try {
@@ -345,7 +415,7 @@ async function stop() {
   const stamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)
   const prefix = current.source === 'whatsapp' ? 'panggilan whatsapp' : 'rapat'
 
-  pendingUpload = {
+  uploadQueue.push({
     blob,
     apiBase: current.apiBase,
     mimeType: descriptor.mimeType,
@@ -355,7 +425,7 @@ async function stop() {
     source: current.source,
     jobId: null,
     uploadUrl: null,
-  }
+  })
 
   runUpload()
   return { ok: true, accepted: true }
@@ -378,7 +448,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'retryUpload') {
-    if (!pendingUpload) {
+    if (uploadQueue.length === 0) {
       sendResponse({ ok: false, error: 'Tidak ada rekaman yang menunggu dikirim' })
       return undefined
     }
@@ -388,8 +458,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'discardUpload') {
-    pendingUpload = null
+    uploadQueue.shift()
     sendResponse({ ok: true })
+    if (uploadQueue.length > 0) runUpload()
     return undefined
   }
 

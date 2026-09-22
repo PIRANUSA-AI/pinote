@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Rekapin Meeting Recorder",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Transkrip langsung rapat Google Meet, Zoom, dan panggilan WhatsApp Web, lalu kirim ke Rekapin.",
   "minimum_chrome_version": "116",
-  "permissions": ["tabCapture", "offscreen", "storage", "tabs", "sidePanel"],
+  "permissions": ["tabCapture", "desktopCapture", "contextMenus", "offscreen", "storage", "tabs", "sidePanel"],
   "host_permissions": [
     "https://rekapin.contrivent.com/*",
     "https://meet.google.com/*",
@@ -20,10 +20,26 @@
   "side_panel": {
     "default_path": "sidepanel.html"
   },
+  "commands": {
+    "mulaiRekapin": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+U",
+        "mac": "Command+Shift+U"
+      },
+      "description": "Mulai atau hentikan Rekapin di tab ini"
+    }
+  },
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*", "https://*.zoom.us/*", "https://web.whatsapp.com/*"],
+      "js": ["speakerWatch.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "icons": {
     "128": "icons/icon128.png"
   }

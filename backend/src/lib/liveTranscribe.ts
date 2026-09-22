@@ -3,10 +3,10 @@ import type { Duplex } from 'node:stream'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type { User } from '../db/schema.js'
 import { findSession } from '../services/auth.js'
-import { QwenRealtimeSession } from '../services/qwenRealtime.js'
+import { LIVE_SAMPLE_RATE, OpenAiRealtimeSession } from '../services/openaiRealtime.js'
 
 const LIVE_PATH = '/live'
-const BYTES_PER_SECOND = 16000 * 2
+const BYTES_PER_SECOND = LIVE_SAMPLE_RATE * 2
 const MAX_SESSION_BYTES = BYTES_PER_SECOND * 60 * 60 * 4
 const MAX_SESSIONS_PER_USER = Number(process.env.LIVE_MAX_SESSIONS_PER_USER ?? 2)
 
@@ -49,7 +49,7 @@ function releaseSlot(userId: string): void {
 }
 
 function handleConnection(ws: WebSocket, user: User): void {
-  let session: QwenRealtimeSession | null = null
+  let session: OpenAiRealtimeSession | null = null
   let streamedBytes = 0
   let settled = false
 
@@ -66,15 +66,15 @@ function handleConnection(ws: WebSocket, user: User): void {
     console.log(`Live session for ${user.id} ended after ${Math.ceil(streamedBytes / BYTES_PER_SECOND)}s of audio`)
   }
 
-  const start = (language: 'id' | 'en' | 'auto') => {
+  const start = (language: 'id' | 'en' | 'auto', sampleRate: number) => {
     if (session) return
-    session = new QwenRealtimeSession(language, {
+    session = new OpenAiRealtimeSession(language, {
       onReady: () => send({ type: 'ready' }),
       onPartial: (text) => send({ type: 'partial', text }),
       onFinal: (text) => send({ type: 'final', text }),
       onError: (message) => send({ type: 'error', message }),
       onClose: () => send({ type: 'upstreamClosed' }),
-    })
+    }, sampleRate)
     session.connect()
   }
 
@@ -92,7 +92,7 @@ function handleConnection(ws: WebSocket, user: User): void {
       return
     }
 
-    let message: { type?: string; language?: string }
+    let message: { type?: string; language?: string; sampleRate?: number }
     try {
       message = JSON.parse(data.toString())
     } catch {
@@ -101,7 +101,11 @@ function handleConnection(ws: WebSocket, user: User): void {
 
     if (message.type === 'start') {
       const language = message.language === 'id' || message.language === 'en' ? message.language : 'auto'
-      start(language)
+      const requested = Number(message.sampleRate)
+      const sampleRate = Number.isFinite(requested) && requested >= 8000 && requested <= 48000
+        ? Math.round(requested)
+        : LIVE_SAMPLE_RATE
+      start(language, sampleRate)
       return
     }
 

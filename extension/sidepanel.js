@@ -112,7 +112,9 @@ async function syncAuth() {
   show(el('loginView'), result.state === 'loggedOut')
   show(el('mainView'), loggedIn)
   if (result.user) {
-    el('userName').textContent = result.user.displayName || result.user.username || result.user.email
+    const name = result.user.displayName || result.user.username || result.user.email
+    el('userName').textContent = name
+    chrome.storage.local.set({ displayName: name }).catch(() => {})
   }
   return loggedIn
 }
@@ -286,6 +288,14 @@ function renderTranscript(state) {
     partialNode = null
   }
 
+  if (renderedCount > 0 && entries.length >= renderedCount) {
+    const rendered = lines.children[renderedCount - 1]
+    const entry = entries[renderedCount - 1]
+    if (rendered && entry && rendered.dataset.text !== entry.text) {
+      lines.replaceChild(buildLine(entry, state.startedAt), rendered)
+    }
+  }
+
   for (let i = renderedCount; i < entries.length; i++) {
     lines.appendChild(buildLine(entries[i], state.startedAt))
   }
@@ -317,6 +327,19 @@ function elapsedMs(state) {
   return Math.max(0, Date.now() - state.startedAt - (state.pausedTotalMs ?? 0) - paused)
 }
 
+function bgUploadText(bg) {
+  if (bg.status === 'uploading') {
+    return bg.queued > 1
+      ? `Mengirim ${bg.queued} rekaman sebelumnya di latar belakang`
+      : 'Mengirim rekaman sebelumnya di latar belakang'
+  }
+  if (bg.status === 'retrying') {
+    return `Rekaman sebelumnya belum terkirim. Mencoba lagi dalam ${secondsUntil(bg.retryAt)} detik (${bg.attempt}/${bg.max}).`
+  }
+  if (bg.status === 'done') return 'Rekaman sebelumnya sudah terkirim ke Rekapin'
+  return bg.message || 'Rekaman sebelumnya belum terkirim'
+}
+
 function renderControls(state) {
   const recording = state.status === 'recording' || state.status === 'starting'
   const uploading = state.status === 'uploading'
@@ -326,6 +349,14 @@ function renderControls(state) {
   show(el('recordDot'), recording && !state.paused)
   show(el('identityRow'), !recording)
   show(el('languageGroup'), !recording)
+  show(el('startHint'), Boolean(kind) && (state.status === 'idle' || state.status === 'error'))
+
+  const bg = state.background
+  if (bg) {
+    el('bgUpload').textContent = bgUploadText(bg)
+    el('bgUpload').className = bg.status === 'failed' ? 'bgUpload warn' : 'bgUpload'
+  }
+  show(el('bgUpload'), Boolean(bg))
   show(el('pauseButton'), recording)
   el('sheet').className = recording ? 'sheet compact' : 'sheet'
 
@@ -357,9 +388,9 @@ function renderControls(state) {
       el('tabState').textContent = 'Mengirim rekaman ke Rekapin'
       el('tabState').className = 'tabState'
     }
-    button.disabled = true
+    button.disabled = !kind
     button.className = 'primaryAction grow'
-    el('recordLabel').textContent = 'Mengirim...'
+    el('recordLabel').textContent = 'Mulai Rekapin'
   } else if (state.status === 'uploadFailed') {
     el('tabState').textContent = 'Rekaman belum terkirim, tapi masih aman tersimpan di browser ini.'
     el('tabState').className = 'tabState warn'
@@ -473,6 +504,7 @@ el('languageGroup').addEventListener('click', (event) => {
     node.classList.toggle('active', node === segment)
   }
   language = segment.dataset.value
+  chrome.storage.local.set({ language }).catch(() => {})
 })
 
 el('copyTranscript').addEventListener('click', async () => {
@@ -556,7 +588,9 @@ el('recordButton').addEventListener('click', async () => {
     tabId: activeTab.id,
     language,
     source: sourceFor(activeTab.url),
+    mode: 'picker',
   })
+  el('recordButton').disabled = false
   await pullState()
 })
 
@@ -572,8 +606,18 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
   }
 })
 
+async function restoreLanguage() {
+  const stored = await chrome.storage.local.get('language').catch(() => null)
+  if (!stored?.language) return
+  language = stored.language
+  for (const node of el('languageGroup').querySelectorAll('.segment')) {
+    node.classList.toggle('active', node.dataset.value === language)
+  }
+}
+
 async function init() {
   config = await readConfig()
+  await restoreLanguage()
   await loadTab()
   void checkForUpdate()
   await syncAuth()
@@ -585,6 +629,7 @@ async function init() {
     const ticking = (latestState.status === 'recording' && !latestState.paused)
       || latestState.live?.status === 'reconnecting'
       || Boolean(latestState.upload?.retryAt)
+      || Boolean(latestState.background?.retryAt)
     if (ticking) renderControls(latestState)
   }, 1000)
 }
