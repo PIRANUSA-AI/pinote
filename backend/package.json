@@ -15,9 +15,6 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1066.0",
-    "@aws-sdk/lib-storage": "^3.1079.0",
-    "@aws-sdk/s3-request-presigner": "^3.1066.0",
     "@hono/node-server": "^1.13.7",
     "bcryptjs": "^2.4.3",
     "dotenv": "^16.4.7",
@@ -29,11 +26,13 @@
     "postgres": "^3.4.5",
     "resend": "^6.17.2",
     "undici": "^6.26.0",
+    "ws": "^8.21.3",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^22.10.2",
+    "@types/ws": "^8.18.1",
     "drizzle-kit": "^0.30.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"

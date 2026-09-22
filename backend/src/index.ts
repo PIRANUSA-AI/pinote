@@ -25,7 +25,13 @@ import { db } from './db/client.js'
 import { jobs } from './db/schema.js'
 import { inArray, sql } from 'drizzle-orm'
 import { checkCache, getWorkerHeartbeat } from './services/cache.js'
-import { checkStorage, isObjectStorageEnabled, isObjectStorageRequired } from './services/storage.js'
+import { checkStorage } from './services/storage.js'
+import { mediaRouter } from './routes/media.js'
+import { attachLiveTranscribe } from './lib/liveTranscribe.js'
+
+function isProductionLike(): boolean {
+  return process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'staging'
+}
 
 const app = new Hono<AppEnv>()
 
@@ -63,8 +69,8 @@ app.get('/health', async (c) => {
   const checks = {
     db: false,
     cache: false,
-    storage: !isObjectStorageRequired(),
-    worker: !isObjectStorageRequired(),
+    storage: false,
+    worker: !isProductionLike(),
   }
 
   try {
@@ -84,11 +90,12 @@ app.get('/health', async (c) => {
     return false
   })
 
-  if (isObjectStorageEnabled()) {
-    checks.storage = await withTimeout(checkStorage(), 5000).catch((err) => {
-      console.error('Health storage check failed:', err)
-      return false
-    })
+  checks.storage = await withTimeout(checkStorage(), 5000).catch((err) => {
+    console.error('Health storage check failed:', err)
+    return false
+  })
+
+  if (isProductionLike()) {
     const heartbeat = await withTimeout(getWorkerHeartbeat(), 5000).catch((err) => {
       console.error('Health worker heartbeat check failed:', err)
       return null
@@ -117,6 +124,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   })
 }
 
+app.route('/media', mediaRouter)
 app.route('/auth', authRouter)
 app.route('/users', usersRouter)
 app.route('/jobs', jobsRouter)
@@ -157,6 +165,7 @@ const port = Number(process.env.PORT ?? 3000)
 const hostname = process.env.HOST ?? '0.0.0.0'
 console.log(`Backend listening on http://${hostname}:${port}`)
 
-serve({ fetch: app.fetch, port, hostname })
+const server = serve({ fetch: app.fetch, port, hostname })
+attachLiveTranscribe(server as unknown as import('node:http').Server)
 
 recoverStuckJobs()

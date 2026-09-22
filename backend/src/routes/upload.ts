@@ -2,63 +2,16 @@ import { Hono } from 'hono'
 import { and, eq, sql } from 'drizzle-orm'
 import { Readable } from 'node:stream'
 import { db } from '../db/client.js'
-import { jobs, users, type JobStatus, type TranscriptPayload } from '../db/schema.js'
+import { jobs, users, type JobStatus } from '../db/schema.js'
 import { requireAuth, type AppEnv } from '../middleware/auth.js'
-import { transcribeWithDeepgram } from '../services/deepgram.js'
-import { cacheJobStatus, invalidateUserStats } from '../services/cache.js'
-import { isObjectStorageEnabled, isObjectStorageRequired, objectExists, writeObjectStream } from '../services/storage.js'
+import { cacheJobStatus } from '../services/cache.js'
+import { writeObjectStream } from '../services/storage.js'
 
 export const uploadRouter = new Hono<AppEnv>()
 
 uploadRouter.use('*', requireAuth)
 
-uploadRouter.post('/:jobId/complete', async (c) => {
-  const user = c.get('user')
-  const jobId = c.req.param('jobId')
-
-  const [job] = await db
-    .select()
-    .from(jobs)
-    .where(and(eq(jobs.id, jobId), eq(jobs.userId, user.id)))
-    .limit(1)
-
-  if (!job) return c.json({ error: 'Job tidak ditemukan' }, 404)
-  if (!job.storageKey) return c.json({ error: 'Job ini tidak memakai object storage upload' }, 409)
-  if (job.status !== 'pending' && job.status !== 'uploading') {
-    return c.json({ error: `Job sudah ${job.status}, tidak bisa di-queue ulang` }, 409)
-  }
-
-  const uploaded = await waitForObject(job.storageKey)
-  if (!uploaded) {
-    return c.json({ error: 'File belum ditemukan di object storage. Upload belum selesai atau gagal.' }, 409)
-  }
-
-  await db
-    .update(jobs)
-    .set({
-      status: 'queued' satisfies JobStatus,
-      uploadedAt: new Date(),
-      queuedAt: new Date(),
-    })
-    .where(and(eq(jobs.id, jobId), eq(jobs.userId, user.id)))
-
-  await cacheJobStatus(jobId, { status: 'queued', progress: 20 })
-  return c.json({ jobId, status: 'queued' })
-})
-
-async function waitForObject(key: string): Promise<boolean> {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    if (await objectExists(key)) return true
-    await new Promise((resolve) => setTimeout(resolve, 500))
-  }
-  return false
-}
-
 uploadRouter.put('/:jobId/storage', async (c) => {
-  if (!isObjectStorageEnabled()) {
-    return c.json({ error: 'Object storage belum aktif' }, 503)
-  }
-
   const user = c.get('user')
   const jobId = c.req.param('jobId')
 
@@ -106,181 +59,19 @@ uploadRouter.put('/:jobId/storage', async (c) => {
     await cacheJobStatus(jobId, { status: 'queued', progress: 20 })
     return c.json({ jobId, status: 'queued' })
   } catch (err) {
-    console.error(`[${jobId}] S3 PutObject failed:`, err)
+    console.error(`[${jobId}] Menulis audio ke disk gagal:`, err)
     const msg = err instanceof Error ? err.message : String(err)
     await Promise.all([
       db
         .update(jobs)
-        .set({ status: 'failed' satisfies JobStatus, errorMessage: `Upload storage gagal: ${msg}` })
+        .set({ status: 'failed' satisfies JobStatus, errorMessage: `Upload gagal: ${msg}` })
         .where(eq(jobs.id, jobId)),
       refundReservedCredits(jobId, user.id),
       cacheJobStatus(jobId, { status: 'failed', error: msg }),
     ])
-    return c.json({ error: 'Gagal upload ke object storage', detail: msg }, 502)
+    return c.json({ error: 'Gagal menyimpan audio', detail: msg }, 502)
   }
 })
-
-uploadRouter.put('/:jobId', async (c) => {
-  if (isObjectStorageEnabled() || isObjectStorageRequired()) {
-    return c.json({ error: 'Direct object storage upload aktif. Gunakan signed upload URL.' }, 409)
-  }
-
-  const user = c.get('user')
-  const jobId = c.req.param('jobId')
-
-  const [job] = await db
-    .select()
-    .from(jobs)
-    .where(and(eq(jobs.id, jobId), eq(jobs.userId, user.id)))
-    .limit(1)
-
-  if (!job) return c.json({ error: 'Job tidak ditemukan' }, 404)
-  if (job.status !== 'pending') {
-    return c.json({ error: `Job sudah ${job.status}, tidak bisa upload ulang` }, 409)
-  }
-
-  const body = c.req.raw.body
-  if (!body) return c.json({ error: 'Request body kosong' }, 400)
-
-  const sizeBytes = job.sizeBytes ?? Number(c.req.header('content-length') ?? 0)
-  if (!sizeBytes) return c.json({ error: 'Content-Length missing' }, 411)
-
-  await db.update(jobs).set({ status: 'uploading' satisfies JobStatus }).where(eq(jobs.id, jobId))
-  await cacheJobStatus(jobId, { status: 'uploading', progress: 10 })
-
-  // Buffer the audio in memory
-  let buffer: Buffer
-  try {
-    const chunks: Uint8Array[] = []
-    const reader = body.getReader()
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      chunks.push(value)
-    }
-    buffer = Buffer.concat(chunks)
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    await db
-      .update(jobs)
-      .set({ status: 'failed' satisfies JobStatus, errorMessage: `Upload gagal: ${msg}` })
-      .where(eq(jobs.id, jobId))
-    if (job.durationSec && job.durationSec > 0) {
-      await db
-        .update(users)
-        .set({ creditSeconds: sql`${users.creditSeconds} + ${job.durationSec}` })
-        .where(eq(users.id, user.id))
-    }
-    await cacheJobStatus(jobId, { status: 'failed', error: msg })
-    return c.json({ error: 'Gagal membaca upload', detail: msg }, 502)
-  }
-
-  await db
-    .update(jobs)
-    .set({ status: 'transcribing' satisfies JobStatus })
-    .where(eq(jobs.id, jobId))
-  await cacheJobStatus(jobId, { status: 'transcribing', progress: 30 })
-
-  void runTranscriptionTask({
-    jobId,
-    userId: user.id,
-    buffer,
-    mimeType: job.mimeType,
-    language: job.language as 'id' | 'en' | 'auto',
-  }).catch((err) => console.error('Background transcription crashed', err))
-
-  return c.json({ jobId, status: 'transcribing' })
-})
-
-async function runTranscriptionTask(args: {
-  jobId: string
-  userId: string
-  buffer: Buffer
-  mimeType: string
-  language: 'id' | 'en' | 'auto'
-}): Promise<void> {
-  try {
-    const { payload: transcript, durationSec: actualDuration } = await transcribeWithDeepgram({
-      buffer: args.buffer,
-      mimeType: args.mimeType,
-      language: args.language,
-      onProgress: async (step) => {
-        console.log(`[${args.jobId}] ${step}`)
-        const progressMap: Record<string, number> = {
-          'Transcribing audio...': 50,
-          'Processing speaker labels...': 70,
-          'Generating summary...': 85,
-        }
-        const progress = progressMap[step] ?? 50
-        await cacheJobStatus(args.jobId, { status: 'transcribing', progress })
-      },
-    })
-
-    const [current] = await db
-      .select({ status: jobs.status, durationSec: jobs.durationSec })
-      .from(jobs)
-      .where(eq(jobs.id, args.jobId))
-      .limit(1)
-
-    if (!current || current.status === 'cancelled') {
-      console.log(`[${args.jobId}] Job cancelled before completion; skipping save and credit reconciliation`)
-      return
-    }
-
-    // Store Deepgram-measured duration (authoritative), not the client estimate
-    await db
-      .update(jobs)
-      .set({
-        status: 'completed' satisfies JobStatus,
-        transcript,
-        durationSec: actualDuration,
-        completedAt: new Date(),
-      })
-      .where(eq(jobs.id, args.jobId))
-
-    // Reconcile the up-front reservation with Deepgram's measured duration.
-    const estimatedDuration = current.durationSec ?? actualDuration
-    const delta = actualDuration - estimatedDuration
-    if (delta < 0) {
-      await db
-        .update(users)
-        .set({ creditSeconds: sql`${users.creditSeconds} + ${Math.abs(delta)}` })
-        .where(eq(users.id, args.userId))
-    } else if (delta > 0) {
-      await db
-        .update(users)
-        .set({ creditSeconds: sql`GREATEST(${users.creditSeconds} - ${delta}, 0)` })
-        .where(eq(users.id, args.userId))
-    }
-
-    await Promise.all([
-      cacheJobStatus(args.jobId, { status: 'completed', progress: 100 }),
-      invalidateUserStats(args.userId),
-    ])
-  } catch (err) {
-    console.error('Transcription failed', err)
-    const msg = err instanceof Error ? err.message : String(err)
-
-    const [current] = await db
-      .select({ status: jobs.status })
-      .from(jobs)
-      .where(eq(jobs.id, args.jobId))
-      .limit(1)
-
-    if (!current || current.status === 'cancelled') {
-      console.log(`[${args.jobId}] Job cancelled after provider error; leaving cancelled`)
-      return
-    }
-
-    await Promise.all([
-      db.update(jobs)
-        .set({ status: 'failed' satisfies JobStatus, errorMessage: msg })
-        .where(eq(jobs.id, args.jobId)),
-      refundReservedCredits(args.jobId, args.userId),
-    ])
-    await cacheJobStatus(args.jobId, { status: 'failed', error: msg })
-  }
-}
 
 async function refundReservedCredits(jobId: string, userId: string): Promise<void> {
   const [job] = await db

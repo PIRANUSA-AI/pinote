@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Rekapin Meeting Recorder",
+  "version": "0.2.0",
+  "description": "Transkrip langsung rapat Google Meet dan Zoom, lalu kirim ke Rekapin.",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabCapture", "offscreen", "storage", "tabs", "sidePanel"],
+  "host_permissions": [
+    "https://rekapin.contrivent.com/*",
+    "http://localhost:3000/*",
+    "https://meet.google.com/*",
+    "https://*.zoom.us/*"
+  ],
+  "action": {
+    "default_title": "Buka panel Rekapin",
+    "default_icon": {
+      "128": "icons/icon128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "icons": {
+    "128": "icons/icon128.png"
+  }
+}

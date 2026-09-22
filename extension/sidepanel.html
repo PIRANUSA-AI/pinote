@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="sidepanel.css" />
+    <title>Rekapin</title>
+  </head>
+  <body>
+    <header class="topBar">
+      <div class="brandRow">
+        <span id="statusDot" class="statusDot"></span>
+        <span class="brand">Rekapin</span>
+      </div>
+      <button id="settingsToggle" class="iconButton" type="button" title="Pengaturan">&#9881;</button>
+    </header>
+
+    <section id="settingsPanel" class="settingsPanel" hidden>
+      <label class="fieldLabel" for="apiBaseInput">API base</label>
+      <input id="apiBaseInput" class="field" type="text" spellcheck="false" />
+      <label class="fieldLabel" for="appBaseInput">App base</label>
+      <input id="appBaseInput" class="field" type="text" spellcheck="false" />
+      <button id="saveSettings" class="buttonGhost" type="button">Simpan</button>
+    </section>
+
+    <div id="loadingView" class="centerNote">Memuat...</div>
+
+    <section id="loginView" class="loginView" hidden>
+      <p class="note">Masuk dulu ke Rekapin, lalu panel ini otomatis terbuka sendiri.</p>
+      <button id="loginButton" class="buttonPrimary" type="button">Masuk ke Rekapin</button>
+    </section>
+
+    <main id="mainView" class="mainView" hidden>
+      <div class="controlBar">
+        <div class="userRow">
+          <span id="userName" class="userName"></span>
+          <span id="userCredit" class="credit"></span>
+        </div>
+
+        <div id="tabState" class="tabState"></div>
+
+        <div class="actionRow">
+          <select id="languageSelect" class="field compact" title="Bahasa">
+            <option value="auto">Auto</option>
+            <option value="id" selected>Indonesia</option>
+            <option value="en">English</option>
+          </select>
+          <button id="recordButton" class="buttonPrimary grow" type="button">Mulai transkrip</button>
+        </div>
+
+        <div id="errorBox" class="errorBox" hidden></div>
+
+        <div id="resultBox" class="resultBox" hidden>
+          <span>Rekaman terkirim. Transkrip final dengan pemisahan pembicara sedang diproses.</span>
+          <button id="openJob" class="buttonGhost" type="button">Buka hasil</button>
+        </div>
+      </div>
+
+      <div class="transcriptWrap">
+        <div id="emptyState" class="emptyState">
+          <p>Belum ada transkrip.</p>
+          <p class="hint">Buka tab Google Meet atau Zoom web, lalu tekan Mulai transkrip.</p>
+        </div>
+        <div id="liveLines" class="liveLines" hidden></div>
+        <button id="jumpLatest" class="jumpLatest" type="button" hidden>Ke terbaru</button>
+      </div>
+    </main>
+
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

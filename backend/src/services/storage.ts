@@ -1,69 +1,24 @@
-import {
-  DeleteObjectCommand,
-  GetObjectCommand,
-  HeadBucketCommand,
-  HeadObjectCommand,
-  PutObjectCommand,
-  S3Client,
-} from '@aws-sdk/client-s3'
-import { Upload } from '@aws-sdk/lib-storage'
-import type { Readable } from 'node:stream'
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { access, mkdir, readFile, stat, unlink } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { dirname, normalize, resolve, sep } from 'node:path'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { buildSignedMediaUrl } from '../lib/mediaSignature.js'
 
-const DEFAULT_SIGNED_URL_TTL_SEC = 15 * 60
+const DEFAULT_MEDIA_ROOT = 'mediaStore'
 
-export function isObjectStorageEnabled(): boolean {
-  return process.env.STORAGE_PROVIDER === 's3'
+export function mediaRoot(): string {
+  return resolve(process.env.MEDIA_ROOT ?? DEFAULT_MEDIA_ROOT)
 }
 
-export function isObjectStorageRequired(): boolean {
-  return process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'staging'
-}
-
-function bucket(): string {
-  const value = process.env.S3_BUCKET
-  if (!value) throw new Error('S3_BUCKET is required when STORAGE_PROVIDER=s3')
-  return value
-}
-
-function client(): S3Client {
-  const endpoint = process.env.S3_ENDPOINT
-  const region = process.env.S3_REGION ?? 'auto'
-  const accessKeyId = process.env.S3_ACCESS_KEY_ID
-  const secretAccessKey = process.env.S3_SECRET_ACCESS_KEY
-  if (!accessKeyId || !secretAccessKey) {
-    throw new Error('S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are required when STORAGE_PROVIDER=s3')
-  }
-
-  return new S3Client({
-    region,
-    endpoint,
-    forcePathStyle: process.env.S3_FORCE_PATH_STYLE !== 'false',
-    credentials: { accessKeyId, secretAccessKey },
-  })
-}
-
-export async function createDownloadUrl(key: string): Promise<string> {
-  const command = new GetObjectCommand({ Bucket: bucket(), Key: key })
-  return getSignedUrl(client(), command, {
-    expiresIn: Number(process.env.S3_SIGNED_URL_TTL_SEC ?? DEFAULT_SIGNED_URL_TTL_SEC),
-  })
-}
-
-export async function createUploadUrl(args: {
-  key: string
-  mimeType: string
-  sizeBytes: number
-}): Promise<string> {
-  const command = new PutObjectCommand({
-    Bucket: bucket(),
-    Key: args.key,
-    ContentType: args.mimeType,
-    ContentLength: args.sizeBytes,
-  })
-  return getSignedUrl(client(), command, {
-    expiresIn: Number(process.env.S3_SIGNED_URL_TTL_SEC ?? DEFAULT_SIGNED_URL_TTL_SEC),
-  })
+export function resolveStoragePath(key: string): string {
+  const root = mediaRoot()
+  const cleaned = normalize(key).replace(/^([/\\]|\.\.([/\\]|$))+/, '')
+  if (!cleaned) throw new Error('Invalid storage key')
+  const full = resolve(root, cleaned)
+  if (full !== root && !full.startsWith(root + sep)) throw new Error('Invalid storage key')
+  return full
 }
 
 export async function writeObjectStream(args: {
@@ -72,51 +27,50 @@ export async function writeObjectStream(args: {
   sizeBytes: number
   body: Readable | Uint8Array
 }): Promise<void> {
-  const upload = new Upload({
-    client: client(),
-    params: {
-      Bucket: bucket(),
-      Key: args.key,
-      Body: args.body,
-      ContentType: args.mimeType,
-    },
-    queueSize: 2,
-    partSize: 6 * 1024 * 1024,
-    leavePartsOnError: false,
-  })
-  await upload.done()
+  const target = resolveStoragePath(args.key)
+  await mkdir(dirname(target), { recursive: true })
+  const source = args.body instanceof Readable ? args.body : Readable.from(args.body)
+  await pipeline(source, createWriteStream(target))
 }
 
 export async function readObject(key: string): Promise<Buffer> {
-  const result = await client().send(new GetObjectCommand({ Bucket: bucket(), Key: key }))
-  const chunks: Uint8Array[] = []
-  const body = result.Body
-  if (!body || typeof (body as { transformToByteArray?: unknown }).transformToByteArray !== 'function') {
-    throw new Error('Storage object response did not include a readable body')
+  return readFile(resolveStoragePath(key))
+}
+
+export function createReadStreamForKey(key: string, range?: { start: number; end: number }): Readable {
+  return createReadStream(resolveStoragePath(key), range)
+}
+
+export async function statObject(key: string): Promise<{ sizeBytes: number } | null> {
+  try {
+    const info = await stat(resolveStoragePath(key))
+    if (!info.isFile()) return null
+    return { sizeBytes: info.size }
+  } catch {
+    return null
   }
-  const bytes = await (body as { transformToByteArray: () => Promise<Uint8Array> }).transformToByteArray()
-  chunks.push(bytes)
-  return Buffer.concat(chunks)
 }
 
 export async function objectExists(key: string): Promise<boolean> {
-  try {
-    await client().send(new HeadObjectCommand({ Bucket: bucket(), Key: key }))
-    return true
-  } catch (err) {
-    const code = (err as { Code?: string; name?: string; $metadata?: { httpStatusCode?: number } }).Code
-    const status = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode
-    if (code === 'NoSuchKey' || code === 'NotFound' || status === 404) return false
-    throw err
-  }
+  return (await statObject(key)) !== null
 }
 
 export async function deleteObject(key: string): Promise<void> {
-  await client().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }))
+  try {
+    await unlink(resolveStoragePath(key))
+  } catch (err) {
+    const code = (err as { code?: string }).code
+    if (code !== 'ENOENT') throw err
+  }
+}
+
+export async function createDownloadUrl(key: string, ttlSec?: number): Promise<string> {
+  return buildSignedMediaUrl(key, ttlSec)
 }
 
 export async function checkStorage(): Promise<boolean> {
-  if (!isObjectStorageEnabled()) return false
-  await client().send(new HeadBucketCommand({ Bucket: bucket() }))
+  const root = mediaRoot()
+  await mkdir(root, { recursive: true })
+  await access(root, constants.W_OK)
   return true
 }

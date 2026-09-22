@@ -7,9 +7,12 @@ import { actionItems, jobs, users, type ActionItemRow, type JobStatus } from '..
 import { requireAuth, type AppEnv } from '../middleware/auth.js'
 import { isAllowedMime, normalizeMime, MAX_FILE_BYTES } from '../lib/validate.js'
 import { cacheJobStatus, getCachedJobStatus } from '../services/cache.js'
-import { createDownloadUrl, createUploadUrl, isObjectStorageEnabled, isObjectStorageRequired } from '../services/storage.js'
+import { createDownloadUrl, objectExists } from '../services/storage.js'
 
-const directBrowserUploadEnabled = process.env.BROWSER_DIRECT_UPLOAD === 'true'
+function safeFilename(name: string): string {
+  const base = name.replace(/[/\\]+/g, '_').replace(/^\.+/, '').trim()
+  return base.length > 0 ? base.slice(0, 200) : 'audio'
+}
 
 const createSchema = z.object({
   filename: z.string().min(1).max(255),
@@ -58,15 +61,7 @@ jobsRouter.post('/', async (c) => {
   }
 
   const jobId = nanoid()
-  const storageEnabled = isObjectStorageEnabled()
-  if (!storageEnabled && isObjectStorageRequired()) {
-    await db
-      .update(users)
-      .set({ creditSeconds: sql`${users.creditSeconds} + ${parsed.data.durationSec}` })
-      .where(eq(users.id, user.id))
-    return c.json({ error: 'Object storage belum aktif. Production upload dinonaktifkan.' }, 503)
-  }
-  const storageKey = storageEnabled ? `uploads/${user.id}/${jobId}/${parsed.data.filename}` : null
+  const storageKey = `uploads/${user.id}/${jobId}/${safeFilename(parsed.data.filename)}`
 
   let created: typeof jobs.$inferSelect
   try {
@@ -94,51 +89,10 @@ jobsRouter.post('/', async (c) => {
 
   await cacheJobStatus(jobId, { status: 'pending', progress: 0 })
 
-  if (storageEnabled && storageKey && !directBrowserUploadEnabled) {
-    return c.json({
-      jobId: created.id,
-      uploadMethod: 'api',
-      uploadUrl: `/upload/${created.id}/storage`,
-    })
-  }
-
-  if (storageEnabled && storageKey) {
-    let signedUrl: string
-    try {
-      signedUrl = await createUploadUrl({
-        key: storageKey,
-        mimeType: mime,
-        sizeBytes: parsed.data.sizeBytes,
-      })
-    } catch (err) {
-      await Promise.all([
-        db
-          .update(users)
-          .set({ creditSeconds: sql`${users.creditSeconds} + ${parsed.data.durationSec}` })
-          .where(eq(users.id, user.id)),
-        db
-          .update(jobs)
-          .set({
-            status: 'failed' satisfies JobStatus,
-            errorMessage: err instanceof Error ? err.message : 'Gagal membuat signed upload URL',
-          })
-          .where(eq(jobs.id, jobId)),
-      ])
-      throw err
-    }
-
-    return c.json({
-      jobId: created.id,
-      uploadMethod: 'direct',
-      uploadUrl: signedUrl,
-      completeUrl: `/upload/${created.id}/complete`,
-    })
-  }
-
   return c.json({
     jobId: created.id,
     uploadMethod: 'api',
-    uploadUrl: `/upload/${created.id}`,
+    uploadUrl: `/upload/${created.id}/storage`,
   })
 })
 
@@ -225,8 +179,9 @@ jobsRouter.get('/:id/audio', requireAuth, async (c) => {
   if (!job) return c.json({ error: 'Job tidak ditemukan' }, 404)
   if (job.userId !== user.id && !user.isAdmin) return c.json({ error: 'Forbidden' }, 403)
   if (!job.storageKey) return c.json({ error: 'Audio tidak tersedia' }, 404)
-
-  if (!isObjectStorageEnabled()) return c.json({ error: 'Object storage tidak aktif' }, 500)
+  if (!(await objectExists(job.storageKey))) {
+    return c.json({ error: 'Rekaman audio sudah tidak ada di server' }, 404)
+  }
 
   const url = await createDownloadUrl(job.storageKey)
   return c.json({ url, mimeType: job.mimeType ?? 'audio/mpeg' })
@@ -248,6 +203,9 @@ jobsRouter.post('/:id/retry', requireAuth, async (c) => {
     return c.json({ error: 'Hanya job gagal/dibatalkan yang bisa di-retry' }, 400)
   }
   if (!job.storageKey) return c.json({ error: 'Audio asli tidak tersedia untuk di-retry' }, 400)
+  if (!(await objectExists(job.storageKey))) {
+    return c.json({ error: 'Rekaman audio sudah tidak ada di server, tidak bisa di-retry' }, 400)
+  }
 
   await db.delete(actionItems).where(eq(actionItems.jobId, id))
 
@@ -466,10 +424,8 @@ jobsRouter.delete('/:id', async (c) => {
   }
 
   if (job.storageKey) {
-    const { deleteObject, isObjectStorageEnabled } = await import('../services/storage.js')
-    if (isObjectStorageEnabled()) {
-      await deleteObject(job.storageKey).catch((err) => console.warn(`Failed to delete storage object for ${id}:`, err))
-    }
+    const { deleteObject } = await import('../services/storage.js')
+    await deleteObject(job.storageKey).catch((err) => console.warn(`Failed to delete stored audio for ${id}:`, err))
   }
 
   await db.delete(jobs).where(eq(jobs.id, id))

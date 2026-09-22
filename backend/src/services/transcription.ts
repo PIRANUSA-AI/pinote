@@ -1,11 +1,14 @@
 import { eq, sql } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { db } from '../db/client.js'
-import { actionItems, jobs, users, type JobStatus, type TranscriptPayload, type TranscriptSegment } from '../db/schema.js'
-import { transcribeAudio, polishTranscript, generateInsights } from './deepgram.js'
+import { actionItems, jobs, users, type JobStatus, type TranscriptPayload } from '../db/schema.js'
+import { transcribeFromUrl } from './qwen.js'
+import { polishTranscript, generateInsights } from './insights.js'
 import { cacheJobStatus, invalidateUserStats } from './cache.js'
-import { readObject } from './storage.js'
+import { createDownloadUrl } from './storage.js'
 import { sendTaskDigest } from './email.js'
+
+const TRANSCRIPTION_URL_TTL_SEC = 4 * 60 * 60
 
 const PROGRESS_BY_STEP: Record<string, number> = {
   'Transcribing audio...': 40,
@@ -34,43 +37,17 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
 
   try {
     await cacheJobStatus(jobId, { status: 'transcribing', progress: 30 })
-    const buffer = await readObject(job.storageKey)
+    const audioUrl = await createDownloadUrl(job.storageKey, TRANSCRIPTION_URL_TTL_SEC)
 
-    // Phase 1: Deepgram transcription only (fast, no GLM)
-    const { segments, detectedLanguage, durationSec: actualDuration } = await transcribeAudio({
-      buffer,
-      mimeType: job.mimeType,
+    const { segments, detectedLanguage, durationSec: actualDuration } = await transcribeFromUrl({
+      audioUrl,
       language: job.language as 'id' | 'en' | 'auto',
-      estimatedDurationSec: job.durationSec ?? undefined,
       onProgress: async (step) => {
         console.log(`[${jobId}] ${step}`)
         await cacheJobStatus(jobId, {
           status: 'transcribing',
           progress: stepProgress(step),
         })
-      },
-      onPartial: async ({ segments: partialSegments, detectedLanguage: partialLang }) => {
-        const [now] = await db
-          .select({ status: jobs.status })
-          .from(jobs)
-          .where(eq(jobs.id, jobId))
-          .limit(1)
-        if (!now || now.status === 'cancelled') {
-          throw new Error('Job cancelled during transcription')
-        }
-
-        const partialPayload: TranscriptPayload = {
-          segments: partialSegments,
-          rawSegments: undefined,
-          polished: false,
-          speakerCount: new Set(partialSegments.map((s) => s.speaker)).size,
-          summary: '',
-          language:
-            job.language === 'auto'
-              ? normalizeLang(partialLang)
-              : (job.language as 'id' | 'en' | 'mixed'),
-        }
-        await db.update(jobs).set({ transcript: partialPayload }).where(eq(jobs.id, jobId))
       },
     })
 

@@ -4,7 +4,7 @@ import { and, asc, eq, isNotNull, lt, sql } from 'drizzle-orm'
 import { db } from './db/client.js'
 import { jobs, users, type JobStatus } from './db/schema.js'
 import { cacheJobStatus, setWorkerHeartbeat } from './services/cache.js'
-import { isObjectStorageEnabled } from './services/storage.js'
+import { checkStorage, mediaRoot } from './services/storage.js'
 import { processStoredTranscriptionJob } from './services/transcription.js'
 
 setGlobalDispatcher(new Agent({
@@ -91,8 +91,11 @@ async function tick(): Promise<void> {
 }
 
 async function main() {
-  if (!isObjectStorageEnabled()) {
-    throw new Error('Worker requires STORAGE_PROVIDER=s3 so queued jobs can read durable audio')
+  try {
+    await checkStorage()
+    console.log(`Worker media root: ${mediaRoot()}`)
+  } catch (err) {
+    throw new Error(`Worker requires a writable MEDIA_ROOT (${mediaRoot()}): ${err instanceof Error ? err.message : String(err)}`)
   }
 
   const recovered = await db

@@ -13,11 +13,11 @@ jobs:
       - name: Deploy
         run: |
           cd /var/www/pinote
-          sudo git reset --hard origin/main
-          sudo git pull origin main
-          sudo npm --prefix backend install
-          sudo npm --prefix frontend install
-          sudo npm run build
-          sudo npm --prefix backend run db:migrate
-          sudo pm2 restart pinote-api pinote-worker
-          sudo pm2 save
+          git fetch origin main
+          git reset --hard origin/main
+          npm --prefix backend install --no-audit --no-fund
+          npm --prefix frontend install --no-audit --no-fund
+          npm run build
+          npm --prefix backend run db:migrate
+          pm2 startOrRestart ecosystem.config.json
+          pm2 save

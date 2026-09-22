@@ -19,7 +19,7 @@ import { actionItems, jobs, users } from '../db/schema.js'
 import { cacheUserStats, getCachedUserStats, cacheIncrWithTtl, cacheDelete, cacheGet } from '../services/cache.js'
 import { nanoid } from 'nanoid'
 
-const DEEPGRAM_COST_PER_MIN = 0.0043
+const TRANSCRIPTION_COST_PER_MIN = Number(process.env.TRANSCRIPTION_COST_PER_MIN ?? 0.0021)
 const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX ?? 10)
 const LOGIN_RATE_LIMIT_WINDOW_SEC = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_SEC ?? 15 * 60)
 // When "1", allow public self-signup via POST /auth/register (used by the
@@ -436,7 +436,7 @@ authRouter.get('/me/stats', requireAuth, async (c) => {
     .limit(1)
 
   const totalDurationSec = Number(agg?.totalDurationSec ?? 0)
-  const estimatedCostUSD = parseFloat(((totalDurationSec / 60) * DEEPGRAM_COST_PER_MIN).toFixed(4))
+  const estimatedCostUSD = parseFloat(((totalDurationSec / 60) * TRANSCRIPTION_COST_PER_MIN).toFixed(4))
 
   const stats = {
     totalDurationSec,

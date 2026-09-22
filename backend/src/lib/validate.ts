@@ -11,6 +11,8 @@ export const ALLOWED_AUDIO_MIMES = new Set([
   'audio/ogg',
   'audio/flac',
   'audio/x-flac',
+  'audio/webm',
+  'audio/opus',
 ])
 
 const DEFAULT_MAX_UPLOAD_MB = 100

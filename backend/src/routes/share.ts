@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { and, asc, eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { actionItems, jobs, type ActionItemRow, type TranscriptPayload } from '../db/schema.js'
-import { createDownloadUrl, isObjectStorageEnabled } from '../services/storage.js'
+import { createDownloadUrl, objectExists } from '../services/storage.js'
 
 // All routes here are PUBLIC (mounted outside the auth-guards jobsRouter).
 // A share token IS the authorization. Two kinds of tokens live on the jobs row:
@@ -20,12 +20,12 @@ shareRouter.get('/mom/:token', async (c) => {
   const [job] = await db.select().from(jobs).where(eq(jobs.shareTokenMom, token)).limit(1)
 
   if (!job) {
-    return c.html(renderMomPage({ title: 'MoM tidak ditemukan - Pinote', body: notFoundBody(), robots: 'noindex' }), 404)
+    return c.html(renderMomPage({ title: 'MoM tidak ditemukan - Rekapin', body: notFoundBody(), robots: 'noindex' }), 404)
   }
 
   const transcript = job.transcript as TranscriptPayload | null
   const meetingTitle = resolveTitle(job)
-  const pageTitle = `${meetingTitle} - Minutes of Meeting - Pinote`
+  const pageTitle = `${meetingTitle} - Minutes of Meeting - Rekapin`
 
   if (job.status !== 'completed' || !transcript) {
     return c.html(renderMomPage({
@@ -69,7 +69,9 @@ shareRouter.get('/:token/audio', async (c) => {
 
   if (!job || !job.shareToken) return c.json({ error: 'Audio tidak tersedia' }, 404)
   if (!job.storageKey) return c.json({ error: 'Audio tidak tersedia' }, 404)
-  if (!isObjectStorageEnabled()) return c.json({ error: 'Object storage tidak aktif' }, 500)
+  if (!(await objectExists(job.storageKey))) {
+    return c.json({ error: 'Rekaman audio sudah tidak ada di server' }, 404)
+  }
 
   const url = await createDownloadUrl(job.storageKey)
   return c.json({ url, mimeType: job.mimeType ?? 'audio/mpeg' })
@@ -82,7 +84,7 @@ shareRouter.get('/:token', async (c) => {
 
   if (!job) {
     return c.html(renderPage({
-      title: 'Link bagikan tidak ditemukan - Pinote',
+      title: 'Link bagikan tidak ditemukan - Rekapin',
       heading: 'Link bagikan tidak ditemukan',
       body: '<p>Link ini tidak valid atau sudah tidak tersedia.</p>',
       robots: 'noindex',
@@ -93,7 +95,7 @@ shareRouter.get('/:token', async (c) => {
 
   const transcript = job.transcript as TranscriptPayload | null
   const meetingTitle = resolveTitle(job)
-  const pageTitle = `${meetingTitle} - Pinote`
+  const pageTitle = `${meetingTitle} - Rekapin`
 
   if (job.status !== 'completed' || !transcript) {
     return c.html(renderPage({
@@ -108,6 +110,7 @@ shareRouter.get('/:token', async (c) => {
 
   const items = await loadActionItems(job.id)
   const speakerNames = (job.speakerNames ?? {}) as Record<string, string>
+  const audioAvailable = Boolean(job.storageKey) && (await objectExists(job.storageKey as string))
 
   if (wantsJson(c)) {
     return c.json({
@@ -125,14 +128,14 @@ shareRouter.get('/:token', async (c) => {
       actionItems: shapeItems(items),
       createdAt: job.createdAt,
       completedAt: job.completedAt,
-      hasAudio: Boolean(job.storageKey) && isObjectStorageEnabled(),
+      hasAudio: audioAvailable,
     })
   }
 
   const summary = transcript.summary?.trim()
   const segments = transcript.segments ?? []
   const hasPolishedTranscript = transcript.polished && transcript.rawSegments !== undefined
-  const hasAudio = Boolean(job.storageKey) && isObjectStorageEnabled()
+  const hasAudio = audioAvailable
 
   const byOwner = new Map<string, ActionItemRow[]>()
   for (const it of items) {
@@ -373,8 +376,8 @@ function momBody(args: {
     ${actionsHtml}
 
     <footer class="mom-footer">
-      <p>Dokumen ini dibuat otomatis dari rekaman rapat menggunakan Pinote. Hanya berisi ringkasan dan tindak lanjut &mdash; bukan transkrip penuh.</p>
-      <p class="meta">Disiapkan ${escapeHtml(dateStr)} &middot; Dipublikasikan via Pinote</p>
+      <p>Dokumen ini dibuat otomatis dari rekaman rapat menggunakan Rekapin. Hanya berisi ringkasan dan tindak lanjut &mdash; bukan transkrip penuh.</p>
+      <p class="meta">Disiapkan ${escapeHtml(dateStr)} &middot; Dipublikasikan via Rekapin</p>
     </footer>
   `
 }
@@ -389,14 +392,14 @@ function renderMomPage(args: { title: string; body: string; robots?: string; sha
     <meta name="robots" content="${escapeHtml(args.robots ?? 'index,follow')}" />
     <meta property="og:type" content="article" />
     <meta property="og:url" content="${escapeHtml(url)}" />
-    <meta property="og:title" content="Minutes of Meeting - Pinote" />
-    <meta property="og:site_name" content="Pinote" />
+    <meta property="og:title" content="Minutes of Meeting - Rekapin" />
+    <meta property="og:site_name" content="Rekapin" />
     <meta name="twitter:card" content="summary" />
     <title>${escapeHtml(args.title)}</title>
     <style>${MOM_STYLES}</style>
   </head>
   <body>
-    <header class="topbar"><div class="topbar-inner"><span class="brand">Pinote</span><small>Minutes of Meeting</small></div></header>
+    <header class="topbar"><div class="topbar-inner"><span class="brand">Rekapin</span><small>Minutes of Meeting</small></div></header>
     <main class="mom">
       ${args.body}
     </main>
@@ -415,7 +418,7 @@ function renderPage(args: {
   image: string | null
   shareUrl?: string
 }): string {
-  const description = args.description ?? 'Pinote public transcript'
+  const description = args.description ?? 'Rekapin public transcript'
   const url = args.shareUrl ?? ''
   return `<!doctype html>
 <html lang="id">
@@ -430,7 +433,7 @@ function renderPage(args: {
     <meta property="og:url" content="${escapeHtml(url)}" />
     <meta property="og:title" content="${escapeHtml(args.heading)}" />
     <meta property="og:description" content="${escapeHtml(description)}" />
-    <meta property="og:site_name" content="Pinote" />
+    <meta property="og:site_name" content="Rekapin" />
     ${args.image ? `<meta property="og:image" content="${escapeHtml(args.image)}" />` : ''}
 
     <!-- Twitter Card -->
@@ -458,7 +461,7 @@ function renderPage(args: {
   <body>
     <header>
       <div>
-        <span>Pinote</span>
+        <span>Rekapin</span>
         <small>Public Transcript</small>
       </div>
     </header>
