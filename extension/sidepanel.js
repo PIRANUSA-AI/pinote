@@ -288,10 +288,11 @@ function renderTranscript(state) {
     partialNode = null
   }
 
-  if (renderedCount > 0 && entries.length >= renderedCount) {
-    const rendered = lines.children[renderedCount - 1]
-    const entry = entries[renderedCount - 1]
-    if (rendered && entry && rendered.dataset.text !== entry.text) {
+  // Native caption revisions and delayed roster updates may amend any row.
+  for (let i = 0; i < Math.min(renderedCount, entries.length); i++) {
+    const rendered = lines.children[i]
+    const entry = entries[i]
+    if (rendered && entry && (rendered.dataset.text !== entry.text || rendered.dataset.speaker !== (entry.speaker ?? ''))) {
       lines.replaceChild(buildLine(entry, state.startedAt), rendered)
     }
   }
@@ -363,7 +364,7 @@ function renderControls(state) {
   const attendance = state.attendance ?? []
   const onMeet = state.source === 'meet'
   show(el('watcherHint'), recording && onMeet && !state.watcherOn)
-  show(el('captionHint'), recording && onMeet && state.watcherOn && state.captionsOn === false && attendance.length > 2)
+  show(el('captionHint'), recording && onMeet && state.watcherOn)
   if (attendance.length > 0) el('attendanceRow').textContent = `Hadir: ${attendance.join(', ')}`
   show(el('attendanceRow'), recording && attendance.length > 0)
   el('sheet').className = recording ? 'sheet compact' : 'sheet'
@@ -606,7 +607,7 @@ el('recordButton').addEventListener('click', async () => {
     tabId: activeTab.id,
     language,
     source: sourceFor(activeTab.url),
-    mode: 'picker',
+    mode: 'invoke',
     skipInsights: !el('autoInsights').checked,
   })
   el('recordButton').disabled = false

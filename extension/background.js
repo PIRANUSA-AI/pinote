@@ -1,4 +1,5 @@
 import { readConfig } from './config.js'
+import { applyMeetEvent, nativeTranscript } from './meetTranscript.js'
 
 const ACTIVE_STATUSES = ['starting', 'recording', 'uploading', 'uploadFailed']
 const MENU_ID = 'mulaiRekapin'
@@ -27,6 +28,9 @@ const state = {
   watcherOn: false,
   attendance: [],
   utteranceStart: null,
+  sessionId: null,
+  meetParticipants: {},
+  nativeError: null,
 }
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
@@ -136,7 +140,13 @@ function pickTabStream() {
 
 async function resolveStream(tabId, mode) {
   if (mode === 'invoke') {
-    return { streamId: await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }), mediaSource: 'tab' }
+    try {
+      return { streamId: await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }), mediaSource: 'tab' }
+    } catch (error) {
+      if (!/not been invoked|activeTab/i.test(String(error))) throw error
+      // Opening a persistent side panel doesn't always grant this tab capture.
+      // Let Chrome ask for a tab instead of leaving the user at a dead end.
+    }
   }
   return { streamId: await pickTabStream(), mediaSource: 'desktop' }
 }
@@ -170,6 +180,12 @@ function broadcast() {
 }
 
 function reset() {
+  speakerEvents = []
+  roster = []
+  state.sessionId = null
+  state.meetParticipants = {}
+  state.nativeError = null
+  state.watcherOn = false
   state.status = 'idle'
   state.lines = []
   state.partial = ''
@@ -229,6 +245,7 @@ async function startRecording(tabId, language, source, mode, skipInsights) {
   state.status = 'starting'
   state.tabId = tabId
   state.source = source ?? 'upload'
+  state.sessionId = crypto.randomUUID()
   broadcast()
 
   try {
@@ -250,9 +267,17 @@ async function startRecording(tabId, language, source, mode, skipInsights) {
     state.status = 'recording'
     state.startedAt = Date.now()
     broadcast()
-    void ensureWatcher(tabId)
+    if (state.source === 'meet') {
+      const native = await chrome.tabs.sendMessage(tabId, { target: 'meetBridge', type: 'start', session: state.sessionId })
+        .catch(() => ({ ok: false, error: 'Muat ulang tab Meet setelah memperbarui extension, lalu mulai lagi.' }))
+      if (!native?.ok) throw new Error(native?.error || 'Koneksi transkrip native Meet belum siap.')
+      state.watcherOn = true
+      broadcast()
+    } else void ensureWatcher(tabId)
     return { ok: true }
   } catch (err) {
+    await chrome.tabs.sendMessage(tabId, { target: 'meetBridge', type: 'stop' }).catch(() => {})
+    await chrome.runtime.sendMessage({ target: 'offscreen', type: 'cancelCapture' }).catch(() => {})
     state.status = 'error'
     state.error = err instanceof Error ? err.message : String(err)
     await closeOffscreen().catch(() => {})
@@ -262,6 +287,7 @@ async function startRecording(tabId, language, source, mode, skipInsights) {
 }
 
 function buildSpeakerTimeline() {
+  if (state.source === 'meet') return []
   if (!state.startedAt || state.pausedTotalMs > 0) return []
   return state.lines
     .filter((line) => line.speaker && line.speaker !== 'Peserta')
@@ -318,11 +344,20 @@ async function setPaused(paused) {
   state.paused = paused
   if (paused) {
     state.pausedAt = Date.now()
+    if (state.source === 'meet') for (const line of state.lines) line.frozen = true
   } else if (state.pausedAt) {
     state.pausedTotalMs += Date.now() - state.pausedAt
     state.pausedAt = null
+    if (state.source === 'meet') state.sessionId = crypto.randomUUID()
   }
   broadcast()
+  if (state.source === 'meet') {
+    if (paused) await chrome.tabs.sendMessage(state.tabId, { target: 'meetBridge', type: 'stop' }).catch(() => {})
+    else {
+      const resumed = await chrome.tabs.sendMessage(state.tabId, { target: 'meetBridge', type: 'start', session: state.sessionId }).catch(() => null)
+      if (!resumed?.ok) { state.error = 'Transkrip Meet belum tersambung kembali. Hentikan sesi, lalu muat ulang tab Meet.'; broadcast() }
+    }
+  }
   return { ok: true, paused }
 }
 
@@ -342,6 +377,7 @@ async function stopRecording() {
       type: 'stopCapture',
       attendance: state.attendance ?? [],
       speakerTimeline: buildSpeakerTimeline(),
+      nativeTranscript: state.source === 'meet' ? nativeTranscript(state) : undefined,
     })
     if (!response || !response.ok) {
       throw new Error(response && response.error ? response.error : 'Gagal menyimpan rekaman')
@@ -382,6 +418,7 @@ async function discardUpload() {
 }
 
 function handleOffscreenEvent(message) {
+  if (state.source === 'meet' && ['livePartial', 'liveFinal'].includes(message.type)) return
   if (message.type === 'livePartial') {
     if (!state.partial) state.utteranceStart = Date.now()
     state.partial = message.text
@@ -470,7 +507,21 @@ function handleOffscreenEvent(message) {
   broadcast()
 }
 
-async function handleServiceMessage(message) {
+async function handleServiceMessage(message, sender) {
+  if (message.type === 'meetNative') {
+    if (sender?.tab?.id !== state.tabId || sender.frameId !== 0 || state.source !== 'meet' || state.status !== 'recording' || state.paused || message.session !== state.sessionId) return { ok: false }
+    if (message.event === 'error') {
+      state.error = typeof message.message === 'string' ? message.message.slice(0, 300) : 'Data Meet belum tersedia.'
+      state.nativeError = state.error
+      broadcast()
+    } else if (applyMeetEvent(state, message)) {
+      if (message.event === 'caption' && state.error === state.nativeError) { state.error = null; state.nativeError = null }
+      broadcast()
+    }
+    return { ok: true }
+  }
+  if (['speaker', 'roster', 'watcher', 'captions'].includes(message.type)
+    && (sender?.tab?.id !== state.tabId || state.source === 'meet' || state.status !== 'recording' || state.paused)) return { ok: false }
   if (message.type === 'getState') return { ...state }
   if (message.type === 'speaker') {
     noteSpeaker(message.name ?? null)
@@ -540,6 +591,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.target !== 'service') return undefined
 
-  ready.then(() => handleServiceMessage(message)).then(sendResponse)
+  ready.then(() => handleServiceMessage(message, sender)).then(sendResponse)
   return true
 })

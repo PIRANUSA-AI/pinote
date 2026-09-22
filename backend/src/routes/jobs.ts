@@ -8,6 +8,7 @@ import { requireAuth, type AppEnv } from '../middleware/auth.js'
 import { isAllowedMime, normalizeMime, MAX_FILE_BYTES } from '../lib/validate.js'
 import { cacheJobStatus, getCachedJobStatus } from '../services/cache.js'
 import { createDownloadUrl, objectExists } from '../services/storage.js'
+import { nativeTranscriptSchema } from '../lib/nativeTranscript.js'
 
 function safeFilename(name: string): string {
   const base = name.replace(/[/\\]+/g, '_').replace(/^\.+/, '').trim()
@@ -22,6 +23,7 @@ const createSchema = z.object({
   language: z.enum(['id', 'en', 'auto']).optional(),
   source: z.enum(['upload', 'meet', 'zoom', 'whatsapp']).optional(),
   skipInsights: z.boolean().optional(),
+  nativeTranscript: nativeTranscriptSchema.optional(),
   attendance: z.array(z.string().min(1).max(120)).max(50).optional(),
   speakerTimeline: z
     .array(
@@ -33,7 +35,7 @@ const createSchema = z.object({
     )
     .max(2000)
     .optional(),
-})
+}).refine((value) => value.nativeTranscript === undefined || value.source === 'meet', 'Transkrip native hanya tersedia untuk Google Meet')
 
 export const jobsRouter = new Hono<AppEnv>()
 
@@ -82,6 +84,7 @@ jobsRouter.post('/', async (c) => {
       skipInsights: parsed.data.skipInsights ?? false,
       attendance: parsed.data.attendance ?? [],
       speakerTimeline: parsed.data.speakerTimeline ?? [],
+      nativeTranscript: parsed.data.nativeTranscript ?? null,
     })
     .returning()
 
@@ -91,6 +94,7 @@ jobsRouter.post('/', async (c) => {
     jobId: created.id,
     uploadMethod: 'api',
     uploadUrl: `/upload/${created.id}/storage`,
+    transcriptSource: created.nativeTranscript !== null ? 'meet-native' : 'audio',
   })
 })
 

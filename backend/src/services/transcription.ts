@@ -8,6 +8,7 @@ import { polishTranscript, generateInsights } from './insights.js'
 import { cacheJobStatus, invalidateUserStats } from './cache.js'
 import { createDownloadUrl } from './storage.js'
 import { sendTaskDigest } from './email.js'
+import { nativeSegments } from '../lib/nativeTranscript.js'
 
 const TRANSCRIPTION_URL_TTL_SEC = 4 * 60 * 60
 
@@ -43,7 +44,14 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
     await cacheJobStatus(jobId, { status: 'transcribing', progress: 30 })
     const audioUrl = await createDownloadUrl(job.storageKey, TRANSCRIPTION_URL_TTL_SEC)
 
-    const { segments, detectedLanguage, durationSec: actualDuration } = await transcribeFromUrl({
+    if (job.nativeTranscript !== null && job.nativeTranscript.length === 0) {
+      throw new Error('Tidak ada transkrip native Meet yang tertangkap. Rekaman tersimpan, tetapi identitas pembicara tidak akan ditebak.')
+    }
+    const { segments, detectedLanguage, durationSec: actualDuration } = job.nativeTranscript !== null ? {
+      segments: nativeSegments(job.nativeTranscript),
+      detectedLanguage: job.language === 'auto' ? undefined : job.language,
+      durationSec: job.durationSec ?? 0,
+    } : await transcribeFromUrl({
       audioUrl,
       language: job.language as 'id' | 'en' | 'auto',
       speakerTimeline: job.speakerTimeline ?? [],
@@ -231,7 +239,8 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
         }
 
         // Step 2: Polish transcript (refine segment text) in background
-        if (segments.length > 0) {
+        // Keep native event boundaries and identity intact; GLM is for insights.
+        if (segments.length > 0 && job.nativeTranscript === null) {
           console.log(`[${jobId}] Background: Refining transcript...`)
           try {
             const r = await polishTranscript(segments)

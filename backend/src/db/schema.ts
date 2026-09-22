@@ -60,6 +60,7 @@ export const jobs = pgTable(
     // separate token so a stakeholder link cannot be mutated into a full one.
     shareTokenMom: text('share_token_mom'),
     transcript: jsonb('transcript').$type<TranscriptPayload | null>(),
+    nativeTranscript: jsonb('native_transcript').$type<NativeTranscriptLine[] | null>(),
     speakerNames: jsonb('speaker_names').$type<Record<string, string>>().notNull().default({}),
     attendance: jsonb('attendance').$type<string[]>().default([]),
     errorMessage: text('error_message'),
@@ -114,6 +115,18 @@ export interface TranscriptSegment {
   end: string
   speaker: string
   text: string
+  participantId?: string
+  provenance?: 'meet-native'
+}
+
+export interface NativeTranscriptLine {
+  participantId: string
+  name: string | null
+  text: string
+  start: number
+  end: number
+  eventId: string
+  version: string
 }
 
 export interface TranscriptPayload {

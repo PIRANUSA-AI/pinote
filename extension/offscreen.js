@@ -238,6 +238,8 @@ async function start({ streamId, mediaSource, language, apiBase, source, skipIns
     source: source ?? 'upload',
     skipInsights: Boolean(skipInsights),
     paused: false,
+    pausedAt: null,
+    pausedTotalMs: 0,
     stopping: false,
     liveRetry: 0,
     liveTimer: null,
@@ -277,7 +279,9 @@ async function start({ streamId, mediaSource, language, apiBase, source, skipIns
     if (current.socket && current.socket.readyState === WebSocket.OPEN) current.socket.send(event.data)
   }
 
-  connectLive()
+  // Meet's native transcript already carries participant IDs. Sending the mixed
+  // recording to live ASR would lose that identity and create duplicate lines.
+  if (capture.source !== 'meet') connectLive()
   report({ type: 'captureStarted' })
 }
 
@@ -329,6 +333,7 @@ async function createJob(job) {
         skipInsights: job.skipInsights,
         attendance: job.attendance,
         speakerTimeline: job.speakerTimeline,
+        nativeTranscript: job.nativeTranscript,
       }),
     })
   } catch {
@@ -339,7 +344,11 @@ async function createJob(job) {
     const detail = await response.json().catch(() => ({}))
     throw httpError(detail.error || `Gagal membuat job (${response.status})`, response.status)
   }
-  return response.json()
+  const result = await response.json()
+  if (job.nativeTranscript !== undefined && result.transcriptSource !== 'meet-native') {
+    throw permanentError('Backend belum mendukung transkrip native Meet. Perbarui backend sebelum mengirim ulang; rekaman tetap tersedia di sesi ini.')
+  }
+  return result
 }
 
 async function jobAlreadyReceived(job) {
@@ -410,7 +419,7 @@ async function runUpload() {
   if (delivered && uploadQueue.length > 0) void runUpload()
 }
 
-async function stop(attendance, speakerTimeline) {
+async function stop(attendance, speakerTimeline, nativeTranscript) {
   if (!capture) return { ok: false, error: 'Tidak ada perekaman aktif' }
   const current = capture
   current.stopping = true
@@ -448,12 +457,13 @@ async function stop(attendance, speakerTimeline) {
     apiBase: current.apiBase,
     mimeType: descriptor.mimeType,
     filename: `${prefix} ${stamp}.${descriptor.extension}`,
-    durationSec: Math.max(1, Math.round((Date.now() - current.startedAt) / 1000)),
+    durationSec: Math.max(1, Math.round((Date.now() - current.startedAt - current.pausedTotalMs - (current.pausedAt ? Date.now() - current.pausedAt : 0)) / 1000)),
     language: current.language,
     source: current.source,
     skipInsights: current.skipInsights,
     attendance: Array.isArray(attendance) ? attendance : [],
     speakerTimeline: Array.isArray(speakerTimeline) ? speakerTimeline : [],
+    nativeTranscript: current.source === 'meet' && Array.isArray(nativeTranscript) ? nativeTranscript : undefined,
     jobId: null,
     uploadUrl: null,
   })
@@ -485,6 +495,9 @@ async function cancelCapture() {
 
 function setPaused(paused) {
   if (!capture) return { ok: false, error: 'Tidak ada sesi aktif' }
+  if (capture.paused === paused) return { ok: true, paused }
+  if (paused) capture.pausedAt = Date.now()
+  else if (capture.pausedAt) { capture.pausedTotalMs += Date.now() - capture.pausedAt; capture.pausedAt = null }
   capture.paused = paused
   if (paused && capture.recorder.state === 'recording') capture.recorder.pause()
   if (!paused && capture.recorder.state === 'paused') capture.recorder.resume()
@@ -531,7 +544,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'stopCapture') {
-    stop(message.attendance, message.speakerTimeline)
+    stop(message.attendance, message.speakerTimeline, message.nativeTranscript)
       .then((result) => sendResponse(result))
       .catch((err) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }))
     return true
