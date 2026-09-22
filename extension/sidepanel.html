@@ -6,9 +6,19 @@
     <title>Rekapin</title>
   </head>
   <body>
+    <button id="updateBanner" class="updateBanner" type="button" hidden></button>
+
     <div id="loadingView" class="bootView">
       <div class="spinner"></div>
     </div>
+
+    <section id="errorView" class="loginView" hidden>
+      <img class="mark" src="icons/logo.svg" alt="" />
+      <p class="eyebrow">Rekapin by Contrivent</p>
+      <h1 class="display">Tidak terhubung</h1>
+      <p class="subtle">Server Rekapin tidak menjawab. Periksa koneksi internet kamu, lalu coba lagi.</p>
+      <button id="retryButton" class="googleButton" type="button">Coba lagi</button>
+    </section>
 
     <section id="loginView" class="loginView" hidden>
       <img class="mark" src="icons/logo.svg" alt="" />
@@ -54,6 +64,11 @@
         </div>
 
         <div id="errorBox" class="errorBox" hidden></div>
+
+        <div id="uploadRow" class="actionRow" hidden>
+          <button id="retryUploadButton" class="primaryAction grow" type="button">Kirim ulang</button>
+          <button id="discardUploadButton" class="secondaryAction" type="button">Buang</button>
+        </div>
 
         <div id="recoveryRow" class="actionRow" hidden>
           <button id="copyTranscript" class="secondaryAction grow" type="button">Salin transkrip</button>
@@ -104,7 +119,7 @@
         <div id="emptyState" class="emptyState">
           <div class="emptyMark"></div>
           <p class="emptyTitle">Belum ada yang terdengar</p>
-          <p class="hint">Buka tab Google Meet atau Zoom web, lalu tekan Mulai Rekapin.</p>
+          <p class="hint">Buka tab Google Meet, Zoom web, atau WhatsApp Web, lalu tekan Mulai Rekapin.</p>
         </div>
         <div id="liveLines" class="liveLines" hidden></div>
         <button id="jumpLatest" class="jumpLatest" type="button" hidden>Ke terbaru</button>

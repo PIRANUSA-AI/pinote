@@ -15,6 +15,7 @@ let searchQuery = ''
 let matches = []
 let activeMatch = -1
 let notice = ''
+let authDelay = 1500
 
 function show(node, visible) {
   node.hidden = !visible
@@ -31,7 +32,44 @@ function meetingKind(url) {
   if (!url) return null
   if (url.startsWith('https://meet.google.com/')) return 'Google Meet'
   if (/^https:\/\/[^/]*\.?zoom\.us\//.test(url)) return 'Zoom'
+  if (url.startsWith('https://web.whatsapp.com/')) return 'WhatsApp'
   return null
+}
+
+function sourceFor(url) {
+  const kind = meetingKind(url)
+  if (kind === 'Google Meet') return 'meet'
+  if (kind === 'Zoom') return 'zoom'
+  if (kind === 'WhatsApp') return 'whatsapp'
+  return 'upload'
+}
+
+function isNewerVersion(candidate, installed) {
+  const a = String(candidate).split('.').map((part) => Number(part) || 0)
+  const b = String(installed).split('.').map((part) => Number(part) || 0)
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const diff = (a[i] ?? 0) - (b[i] ?? 0)
+    if (diff !== 0) return diff > 0
+  }
+  return false
+}
+
+async function checkForUpdate() {
+  try {
+    const response = await fetch(`${config.appBase}/downloads/latest.json?t=${Date.now()}`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
+    })
+    if (!response.ok) return
+    const latest = await response.json()
+    const installed = chrome.runtime.getManifest().version
+    if (!latest?.version || !isNewerVersion(latest.version, installed)) return
+    const banner = el('updateBanner')
+    banner.textContent = `Versi ${latest.version} tersedia (kamu memakai ${installed}). Klik untuk mengunduh.`
+    show(banner, true)
+  } catch {
+    return
+  }
 }
 
 async function micPermissionState() {
@@ -48,25 +86,60 @@ async function loadTab() {
   activeTab = tab ?? null
 }
 
+const AUTH_TIMEOUT_MS = 8000
+const AUTH_DELAY_MIN_MS = 1500
+const AUTH_DELAY_MAX_MS = 30000
+
 async function fetchMe() {
   try {
-    const response = await fetch(`${config.apiBase}/auth/me`, { credentials: 'include' })
-    if (!response.ok) return null
-    return await response.json()
+    const response = await fetch(`${config.apiBase}/auth/me`, {
+      credentials: 'include',
+      signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
+    })
+    if (response.status === 401) return { state: 'loggedOut', user: null }
+    if (!response.ok) return { state: 'error', user: null }
+    return { state: 'loggedIn', user: await response.json() }
   } catch {
-    return null
+    return { state: 'error', user: null }
   }
 }
 
 async function syncAuth() {
-  const me = await fetchMe()
-  loggedIn = Boolean(me)
-  show(el('loginView'), !loggedIn)
+  const result = await fetchMe()
+  loggedIn = result.state === 'loggedIn'
+  show(el('loadingView'), false)
+  show(el('errorView'), result.state === 'error')
+  show(el('loginView'), result.state === 'loggedOut')
   show(el('mainView'), loggedIn)
-  if (me) {
-    el('userName').textContent = me.displayName || me.username || me.email
+  if (result.user) {
+    el('userName').textContent = result.user.displayName || result.user.username || result.user.email
   }
   return loggedIn
+}
+
+function scheduleAuth(ms) {
+  clearTimeout(authTimer)
+  authTimer = setTimeout(authTick, ms)
+}
+
+async function authTick() {
+  if (loggedIn) return
+  if (document.hidden) {
+    scheduleAuth(5000)
+    return
+  }
+  if (await syncAuth()) {
+    await pullState()
+    return
+  }
+  authDelay = Math.min(authDelay * 1.6, AUTH_DELAY_MAX_MS)
+  scheduleAuth(authDelay)
+}
+
+function restartAuthPolling() {
+  if (loggedIn) return
+  authDelay = AUTH_DELAY_MIN_MS
+  scheduleAuth(300)
 }
 
 function scrollToLatest() {
@@ -259,28 +332,52 @@ function renderControls(state) {
   if (recording) {
     el('pauseButton').textContent = state.paused ? 'Lanjut' : 'Jeda'
     el('pauseButton').className = state.paused ? 'secondaryAction resumed' : 'secondaryAction'
-    el('tabState').textContent = state.paused
-      ? `Dijeda  ${formatClock(elapsedMs(state))}`
-      : `Transkrip berjalan  ${formatClock(elapsedMs(state))}`
-    el('tabState').className = state.paused ? 'tabState' : 'tabState active'
+    const label = state.source === 'whatsapp' ? 'Transkrip privat berjalan' : 'Transkrip berjalan'
+    const live = state.live?.status
+    if (live === 'reconnecting') {
+      el('tabState').textContent = `Koneksi terputus. Menyambung ulang dalam ${secondsUntil(state.live.retryAt)} detik (${state.live.attempt}/${state.live.max}). Rekaman tetap berjalan.`
+      el('tabState').className = 'tabState warn'
+    } else if (live === 'lost') {
+      el('tabState').textContent = 'Transkrip langsung terhenti, tapi rekaman tetap berjalan dan diproses lengkap setelah selesai.'
+      el('tabState').className = 'tabState warn'
+    } else {
+      el('tabState').textContent = state.paused
+        ? `Dijeda  ${formatClock(elapsedMs(state))}`
+        : `${label}  ${formatClock(elapsedMs(state))}`
+      el('tabState').className = state.paused ? 'tabState' : 'tabState active'
+    }
     button.disabled = false
     button.className = 'primaryAction grow recording'
     el('recordLabel').textContent = 'Berhenti dan kirim'
   } else if (uploading) {
-    el('tabState').textContent = 'Mengirim rekaman ke Rekapin'
-    el('tabState').className = 'tabState'
+    if (state.upload?.retryAt) {
+      el('tabState').textContent = `Gagal mengirim. Mencoba lagi dalam ${secondsUntil(state.upload.retryAt)} detik (${state.upload.attempt}/${state.upload.max}). Rekaman aman.`
+      el('tabState').className = 'tabState warn'
+    } else {
+      el('tabState').textContent = 'Mengirim rekaman ke Rekapin'
+      el('tabState').className = 'tabState'
+    }
     button.disabled = true
     button.className = 'primaryAction grow'
     el('recordLabel').textContent = 'Mengirim...'
+  } else if (state.status === 'uploadFailed') {
+    el('tabState').textContent = 'Rekaman belum terkirim, tapi masih aman tersimpan di browser ini.'
+    el('tabState').className = 'tabState warn'
+    button.disabled = true
+    button.className = 'primaryAction grow'
+    el('recordLabel').textContent = 'Belum terkirim'
   } else {
     button.className = 'primaryAction grow'
     el('recordLabel').textContent = 'Mulai Rekapin'
     if (kind) {
-      el('tabState').textContent = notice || `${kind} terdeteksi di tab ini`
-      el('tabState').className = 'tabState'
+      const detected = kind === 'WhatsApp'
+        ? 'WhatsApp terdeteksi. Mode privat: tugas hanya untuk kamu, tanpa email, dan tidak bisa dibagikan.'
+        : `${kind} terdeteksi di tab ini`
+      el('tabState').textContent = notice || detected
+      el('tabState').className = kind === 'WhatsApp' ? 'tabState private' : 'tabState'
       button.disabled = false
     } else {
-      el('tabState').textContent = 'Buka tab Google Meet atau Zoom web dulu. Aplikasi Zoom desktop tidak bisa direkam.'
+      el('tabState').textContent = 'Buka tab Google Meet, Zoom web, atau WhatsApp Web dulu. Aplikasi desktop tidak bisa direkam.'
       el('tabState').className = 'tabState warn'
       button.disabled = true
     }
@@ -290,6 +387,12 @@ function renderControls(state) {
   show(el('errorBox'), Boolean(state.error))
   if (state.error) el('errorBox').textContent = state.error
   show(el('recoveryRow'), state.status === 'interrupted' && (state.lines ?? []).length > 0)
+  show(el('uploadRow'), state.status === 'uploadFailed')
+}
+
+function secondsUntil(timestamp) {
+  if (!timestamp) return 0
+  return Math.max(0, Math.ceil((timestamp - Date.now()) / 1000))
 }
 
 function applyState(state) {
@@ -383,6 +486,20 @@ el('copyTranscript').addEventListener('click', async () => {
   }, 1500)
 })
 
+el('retryUploadButton').addEventListener('click', async () => {
+  el('retryUploadButton').disabled = true
+  await chrome.runtime.sendMessage({ target: 'service', type: 'retryUpload' })
+  el('retryUploadButton').disabled = false
+  await pullState()
+})
+
+el('discardUploadButton').addEventListener('click', async () => {
+  const sure = window.confirm('Buang rekaman ini? Rekaman yang belum terkirim akan hilang permanen.')
+  if (!sure) return
+  await chrome.runtime.sendMessage({ target: 'service', type: 'discardUpload' })
+  await pullState()
+})
+
 el('discardSession').addEventListener('click', async () => {
   await chrome.runtime.sendMessage({ target: 'service', type: 'reset' })
   await pullState()
@@ -390,6 +507,20 @@ el('discardSession').addEventListener('click', async () => {
 
 el('loginButton').addEventListener('click', async () => {
   await chrome.tabs.create({ url: `${config.appBase}/login` })
+  restartAuthPolling()
+})
+
+el('updateBanner').addEventListener('click', async () => {
+  await chrome.tabs.create({ url: `${config.appBase}/extension` })
+})
+
+el('retryButton').addEventListener('click', async () => {
+  el('retryButton').disabled = true
+  show(el('errorView'), false)
+  show(el('loadingView'), true)
+  if (await syncAuth()) await pullState()
+  else restartAuthPolling()
+  el('retryButton').disabled = false
 })
 
 el('openJob').addEventListener('click', async () => {
@@ -424,6 +555,7 @@ el('recordButton').addEventListener('click', async () => {
     type: 'start',
     tabId: activeTab.id,
     language,
+    source: sourceFor(activeTab.url),
   })
   await pullState()
 })
@@ -443,23 +575,26 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
 async function init() {
   config = await readConfig()
   await loadTab()
+  void checkForUpdate()
   await syncAuth()
-  show(el('loadingView'), false)
   if (loggedIn) await pullState()
-
-  authTimer = setInterval(async () => {
-    if (!loggedIn && (await syncAuth())) await pullState()
-  }, 2000)
+  else scheduleAuth(authDelay)
 
   clockTimer = setInterval(() => {
-    if (latestState && latestState.status === 'recording' && !latestState.paused) {
-      renderControls(latestState)
-    }
+    if (!latestState) return
+    const ticking = (latestState.status === 'recording' && !latestState.paused)
+      || latestState.live?.status === 'reconnecting'
+      || Boolean(latestState.upload?.retryAt)
+    if (ticking) renderControls(latestState)
   }, 1000)
 }
 
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) restartAuthPolling()
+})
+
 window.addEventListener('unload', () => {
-  if (authTimer) clearInterval(authTimer)
+  clearTimeout(authTimer)
   if (clockTimer) clearInterval(clockTimer)
 })
 

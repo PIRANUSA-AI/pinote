@@ -1,15 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Rekapin Meeting Recorder",
-  "version": "0.5.0",
-  "description": "Transkrip langsung rapat Google Meet dan Zoom, lalu kirim ke Rekapin.",
+  "version": "0.8.0",
+  "description": "Transkrip langsung rapat Google Meet, Zoom, dan panggilan WhatsApp Web, lalu kirim ke Rekapin.",
   "minimum_chrome_version": "116",
   "permissions": ["tabCapture", "offscreen", "storage", "tabs", "sidePanel"],
   "host_permissions": [
     "https://rekapin.contrivent.com/*",
-    "http://localhost:3000/*",
     "https://meet.google.com/*",
-    "https://*.zoom.us/*"
+    "https://*.zoom.us/*",
+    "https://web.whatsapp.com/*"
   ],
   "action": {
     "default_title": "Buka panel Rekapin",

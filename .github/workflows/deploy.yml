@@ -10,14 +10,26 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - name: Deploy
+      - name: Ambil kode dan build
         run: |
           cd /var/www/pinote
           git fetch origin main
           git reset --hard origin/main
+          npm install --no-audit --no-fund
           npm --prefix backend install --no-audit --no-fund
           npm --prefix frontend install --no-audit --no-fund
           npm run build
+
+      - name: Migrasi dan restart
+        run: |
+          cd /var/www/pinote
           npm --prefix backend run db:migrate
           pm2 startOrRestart ecosystem.config.json
           pm2 save
+
+      - name: Kemas extension untuk diunduh
+        env:
+          EXTENSION_SIGNING_KEY: ${{ secrets.EXTENSION_SIGNING_KEY }}
+        run: |
+          cd /var/www/pinote
+          npm run pack:extension

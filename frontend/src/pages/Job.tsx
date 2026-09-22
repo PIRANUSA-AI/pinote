@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { ArrowLeft, ArrowClockwise, ShareNetwork, Trash, WarningCircle, XCircle } from '@phosphor-icons/react'
+import { ArrowLeft, ArrowClockwise, LockSimple, ShareNetwork, Trash, WarningCircle, XCircle } from '@phosphor-icons/react'
 import { ApiError, api, type ActionItem, type JobDetail } from '../lib/api'
 import { TranscriptViewer } from '../components/TranscriptViewer'
 import { ActionItemsPanel } from '../components/ActionItemsPanel'
@@ -192,15 +192,23 @@ export default function Job() {
                 .filter(Boolean)
                 .join(' | ')}
             </p>
+            {job.isPrivate && (
+              <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+                <LockSimple size={12} weight="bold" />
+                Privat: hanya kamu yang bisa melihat, tugas masuk ke daftarmu sendiri
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
-            <button
-              onClick={() => setShareOpen(true)}
-              className="grid place-items-center w-9 h-9 rounded-lg text-ink-muted hover:text-navy hover:bg-slate-100"
-              title="Bagikan"
-            >
-              <ShareNetwork size={18} />
-            </button>
+            {!job.isPrivate && (
+              <button
+                onClick={() => setShareOpen(true)}
+                className="grid place-items-center w-9 h-9 rounded-lg text-ink-muted hover:text-navy hover:bg-slate-100"
+                title="Bagikan"
+              >
+                <ShareNetwork size={18} />
+              </button>
+            )}
             <button
               onClick={() => handleDelete()}
               disabled={deleting}

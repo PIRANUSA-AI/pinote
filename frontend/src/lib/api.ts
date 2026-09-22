@@ -73,6 +73,8 @@ export interface JobSummary {
   createdAt: string
   completedAt: string | null
   speakerCount: number | null
+  source?: string
+  isPrivate?: boolean
 }
 
 export interface TranscriptSegment {
@@ -116,6 +118,8 @@ export interface JobDetail {
   filename: string
   title: string | null
   storageKey?: string | null
+  source?: string
+  isPrivate?: boolean
   mimeType: string
   sizeBytes: number | null
   durationSec: number | null

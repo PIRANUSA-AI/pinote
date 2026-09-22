@@ -1,7 +1,22 @@
+const MAX_RETRIES = 15
+const RETRY_STEP_MS = 5000
+const CREATE_TIMEOUT_MS = 15000
+const UPLOAD_TIMEOUT_MS = 20 * 60 * 1000
+
 let capture = null
+let pendingUpload = null
+let uploadRunning = false
 
 function report(payload) {
   chrome.runtime.sendMessage({ target: 'background', ...payload }).catch(() => {})
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function retryDelay(retry) {
+  return RETRY_STEP_MS * retry
 }
 
 function pickRecorderMime() {
@@ -23,8 +38,89 @@ function websocketUrl(apiBase) {
   return url.toString()
 }
 
-async function start({ streamId, language, apiBase }) {
+function apiUrl(apiBase, path) {
+  if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//')) {
+    throw permanentError('Alamat upload dari server tidak sah')
+  }
+  const base = new URL(apiBase)
+  const target = new URL(`${apiBase}${path}`)
+  if (target.origin !== base.origin || !target.pathname.startsWith(`${base.pathname}/`)) {
+    throw permanentError('Alamat upload dari server tidak sah')
+  }
+  return target.toString()
+}
+
+function permanentError(message) {
+  const err = new Error(message)
+  err.permanent = true
+  return err
+}
+
+function httpError(message, status) {
+  const err = new Error(message)
+  err.status = status
+  err.permanent = status >= 400 && status < 500 && status !== 408 && status !== 409 && status !== 429
+  return err
+}
+
+function connectLive() {
+  const current = capture
+  if (!current || current.stopping) return
+
+  const socket = new WebSocket(websocketUrl(current.apiBase))
+  socket.binaryType = 'arraybuffer'
+  current.socket = socket
+
+  socket.addEventListener('open', () => {
+    if (current.stopping) return
+    current.liveRetry = 0
+    socket.send(JSON.stringify({ type: 'start', language: current.language }))
+    report({ type: 'liveStatus', status: 'connected' })
+  })
+
+  socket.addEventListener('message', (event) => {
+    let message
+    try {
+      message = JSON.parse(event.data)
+    } catch {
+      return
+    }
+    if (message.type === 'partial') report({ type: 'livePartial', text: message.text })
+    else if (message.type === 'final') report({ type: 'liveFinal', text: message.text })
+    else if (message.type === 'error') report({ type: 'liveError', message: message.message })
+    else if (message.type === 'upstreamClosed' && !current.stopping) socket.close()
+  })
+
+  socket.addEventListener('close', (event) => {
+    if (current.stopping || current.socket !== socket) return
+    if (event.code === 1008) {
+      report({ type: 'liveStatus', status: 'lost' })
+      return
+    }
+    scheduleLiveReconnect(current)
+  })
+}
+
+function scheduleLiveReconnect(current) {
+  if (current.liveRetry >= MAX_RETRIES) {
+    report({ type: 'liveStatus', status: 'lost' })
+    return
+  }
+  current.liveRetry += 1
+  const delay = retryDelay(current.liveRetry)
+  report({
+    type: 'liveStatus',
+    status: 'reconnecting',
+    attempt: current.liveRetry,
+    max: MAX_RETRIES,
+    retryAt: Date.now() + delay,
+  })
+  current.liveTimer = setTimeout(() => connectLive(), delay)
+}
+
+async function start({ streamId, language, apiBase, source }) {
   if (capture) throw new Error('Perekaman sudah berjalan')
+  if (uploadRunning || pendingUpload) throw new Error('Rekaman sebelumnya masih dikirim. Tunggu sampai selesai.')
 
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
@@ -64,34 +160,6 @@ async function start({ streamId, language, apiBase }) {
   pcmNode.connect(mute)
   mute.connect(asrContext.destination)
 
-  const socket = new WebSocket(websocketUrl(apiBase))
-  socket.binaryType = 'arraybuffer'
-
-  socket.addEventListener('open', () => {
-    socket.send(JSON.stringify({ type: 'start', language }))
-  })
-
-  socket.addEventListener('message', (event) => {
-    let message
-    try {
-      message = JSON.parse(event.data)
-    } catch {
-      return
-    }
-    if (message.type === 'partial') report({ type: 'livePartial', text: message.text })
-    else if (message.type === 'final') report({ type: 'liveFinal', text: message.text })
-    else if (message.type === 'error') report({ type: 'liveError', message: message.message })
-  })
-
-  socket.addEventListener('error', () => {
-    report({ type: 'liveError', message: 'Koneksi transkrip langsung terputus' })
-  })
-
-  pcmNode.port.onmessage = (event) => {
-    if (capture?.paused) return
-    if (socket.readyState === WebSocket.OPEN) socket.send(event.data)
-  }
-
   const recorderMime = pickRecorderMime()
   const recorder = new MediaRecorder(mixDestination.stream, recorderMime ? { mimeType: recorderMime } : undefined)
   const chunks = []
@@ -105,16 +173,27 @@ async function start({ streamId, language, apiBase }) {
     micStream,
     playbackContext,
     asrContext,
-    socket,
+    socket: null,
     recorder,
     chunks,
     recorderMime: recorderMime || 'audio/webm',
     startedAt: Date.now(),
     language,
     apiBase,
+    source: source ?? 'upload',
     paused: false,
+    stopping: false,
+    liveRetry: 0,
+    liveTimer: null,
   }
 
+  pcmNode.port.onmessage = (event) => {
+    const current = capture
+    if (!current || current.paused || current.stopping) return
+    if (current.socket && current.socket.readyState === WebSocket.OPEN) current.socket.send(event.data)
+  }
+
+  connectLive()
   report({ type: 'captureStarted' })
 }
 
@@ -126,54 +205,128 @@ function stopRecorder(recorder) {
   })
 }
 
-async function uploadRecording(current, blob) {
-  const durationSec = Math.max(1, Math.round((Date.now() - current.startedAt) / 1000))
-  const descriptor = uploadDescriptor(current.recorderMime)
-  const stamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)
-  const filename = `rapat ${stamp}.${descriptor.extension}`
+async function withRetries(task) {
+  let retry = 0
+  while (true) {
+    try {
+      return await task()
+    } catch (err) {
+      if (err.permanent || retry >= MAX_RETRIES) throw err
+      retry += 1
+      const delay = retryDelay(retry)
+      report({
+        type: 'uploadStatus',
+        status: 'retrying',
+        attempt: retry,
+        max: MAX_RETRIES,
+        retryAt: Date.now() + delay,
+        message: err.message,
+      })
+      await sleep(delay)
+    }
+  }
+}
 
-  const createResponse = await fetch(`${current.apiBase}/jobs`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      filename,
-      mimeType: descriptor.mimeType,
-      sizeBytes: blob.size,
-      durationSec,
-      language: current.language,
-    }),
-  })
-
-  if (!createResponse.ok) {
-    const detail = await createResponse.json().catch(() => ({}))
-    throw new Error(detail.error || `Gagal membuat job (${createResponse.status})`)
+async function createJob(job) {
+  let response
+  try {
+    response = await fetch(`${job.apiBase}/jobs`, {
+      method: 'POST',
+      credentials: 'include',
+      signal: AbortSignal.timeout(CREATE_TIMEOUT_MS),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: job.filename,
+        mimeType: job.mimeType,
+        sizeBytes: job.blob.size,
+        durationSec: job.durationSec,
+        language: job.language,
+        source: job.source,
+      }),
+    })
+  } catch {
+    throw new Error('Koneksi terputus saat menyiapkan pengiriman')
   }
 
-  const created = await createResponse.json()
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw httpError(detail.error || `Gagal membuat job (${response.status})`, response.status)
+  }
+  return response.json()
+}
 
-  const uploadResponse = await fetch(`${current.apiBase}${created.uploadUrl}`, {
-    method: 'PUT',
-    credentials: 'include',
-    headers: { 'Content-Type': descriptor.mimeType },
-    body: blob,
-  })
+async function jobAlreadyReceived(job) {
+  try {
+    const response = await fetch(`${job.apiBase}/jobs/${encodeURIComponent(job.jobId)}`, {
+      credentials: 'include',
+      signal: AbortSignal.timeout(CREATE_TIMEOUT_MS),
+    })
+    if (!response.ok) return false
+    const detail = await response.json()
+    return ['queued', 'transcribing', 'completed'].includes(detail.status)
+  } catch {
+    return false
+  }
+}
 
-  if (!uploadResponse.ok) {
-    const detail = await uploadResponse.json().catch(() => ({}))
-    throw new Error(detail.error || `Gagal upload rekaman (${uploadResponse.status})`)
+async function putAudio(job) {
+  let response
+  try {
+    response = await fetch(apiUrl(job.apiBase, job.uploadUrl), {
+      method: 'PUT',
+      credentials: 'include',
+      signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+      headers: { 'Content-Type': job.mimeType },
+      body: job.blob,
+    })
+  } catch (err) {
+    if (err?.permanent) throw err
+    throw new Error('Koneksi terputus saat mengirim rekaman')
   }
 
-  return created.jobId
+  if (response.ok) return
+  if (response.status === 409 && (await jobAlreadyReceived(job))) return
+  const detail = await response.json().catch(() => ({}))
+  throw httpError(detail.error || `Gagal upload rekaman (${response.status})`, response.status)
+}
+
+function friendlyFailure(err) {
+  if (err?.status === 401) return 'Sesi login berakhir. Masuk lagi di Rekapin, lalu tekan Kirim ulang. Rekaman kamu masih aman.'
+  const reason = err instanceof Error ? err.message : String(err)
+  return `Rekaman belum terkirim: ${reason}. Rekaman masih aman, tekan Kirim ulang.`
+}
+
+async function runUpload() {
+  const job = pendingUpload
+  if (!job || uploadRunning) return
+  uploadRunning = true
+  report({ type: 'uploadStatus', status: 'uploading' })
+
+  try {
+    if (!job.jobId) {
+      const created = await withRetries(() => createJob(job))
+      job.jobId = created.jobId
+      job.uploadUrl = created.uploadUrl
+    }
+    await withRetries(() => putAudio(job))
+    pendingUpload = null
+    report({ type: 'uploadStatus', status: 'done', jobId: job.jobId })
+  } catch (err) {
+    report({ type: 'uploadStatus', status: 'failed', message: friendlyFailure(err) })
+  } finally {
+    uploadRunning = false
+  }
 }
 
 async function stop() {
   if (!capture) return { ok: false, error: 'Tidak ada perekaman aktif' }
   const current = capture
+  current.stopping = true
+  clearTimeout(current.liveTimer)
   capture = null
 
   try {
-    if (current.socket.readyState === WebSocket.OPEN) {
+    if (current.socket && current.socket.readyState === WebSocket.OPEN) {
       current.socket.send(JSON.stringify({ type: 'stop' }))
     }
     await stopRecorder(current.recorder)
@@ -182,15 +335,30 @@ async function stop() {
     current.micStream?.getTracks().forEach((track) => track.stop())
     current.playbackContext.close().catch(() => {})
     current.asrContext.close().catch(() => {})
-    setTimeout(() => current.socket.close(), 500)
+    setTimeout(() => current.socket?.close(), 500)
   }
 
   const blob = new Blob(current.chunks, { type: current.recorderMime })
-  if (blob.size === 0) throw new Error('Rekaman kosong')
+  if (blob.size === 0) return { ok: false, error: 'Rekaman kosong' }
 
-  report({ type: 'uploadStarted' })
-  const jobId = await uploadRecording(current, blob)
-  return { ok: true, jobId }
+  const descriptor = uploadDescriptor(current.recorderMime)
+  const stamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)
+  const prefix = current.source === 'whatsapp' ? 'panggilan whatsapp' : 'rapat'
+
+  pendingUpload = {
+    blob,
+    apiBase: current.apiBase,
+    mimeType: descriptor.mimeType,
+    filename: `${prefix} ${stamp}.${descriptor.extension}`,
+    durationSec: Math.max(1, Math.round((Date.now() - current.startedAt) / 1000)),
+    language: current.language,
+    source: current.source,
+    jobId: null,
+    uploadUrl: null,
+  }
+
+  runUpload()
+  return { ok: true, accepted: true }
 }
 
 function setPaused(paused) {
@@ -206,6 +374,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'setPaused') {
     sendResponse(setPaused(Boolean(message.paused)))
+    return undefined
+  }
+
+  if (message.type === 'retryUpload') {
+    if (!pendingUpload) {
+      sendResponse({ ok: false, error: 'Tidak ada rekaman yang menunggu dikirim' })
+      return undefined
+    }
+    runUpload()
+    sendResponse({ ok: true })
+    return undefined
+  }
+
+  if (message.type === 'discardUpload') {
+    pendingUpload = null
+    sendResponse({ ok: true })
     return undefined
   }
 

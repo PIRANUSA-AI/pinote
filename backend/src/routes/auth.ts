@@ -149,7 +149,10 @@ authRouter.get('/me/tasks', requireAuth, async (c) => {
       .from(actionItems)
       .leftJoin(jobs, eq(jobs.id, actionItems.jobId))
       .where(
-        or(sql`${actionItems.jobId} IS NULL`, eq(jobs.status, 'completed'))
+        and(
+          or(sql`${actionItems.jobId} IS NULL`, eq(jobs.status, 'completed')),
+          or(sql`${actionItems.jobId} IS NULL`, eq(jobs.isPrivate, false))
+        )
       )
       .orderBy(desc(sql`COALESCE(${jobs.createdAt}, ${actionItems.createdAt})`), asc(actionItems.order), asc(actionItems.createdAt))
   } else {

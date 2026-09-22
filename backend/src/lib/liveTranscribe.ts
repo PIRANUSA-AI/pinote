@@ -1,15 +1,16 @@
 import type { IncomingMessage, Server } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocketServer, type WebSocket } from 'ws'
-import { eq, sql } from 'drizzle-orm'
-import { db } from '../db/client.js'
-import { users, type User } from '../db/schema.js'
+import type { User } from '../db/schema.js'
 import { findSession } from '../services/auth.js'
 import { QwenRealtimeSession } from '../services/qwenRealtime.js'
 
 const LIVE_PATH = '/live'
 const BYTES_PER_SECOND = 16000 * 2
 const MAX_SESSION_BYTES = BYTES_PER_SECOND * 60 * 60 * 4
+const MAX_SESSIONS_PER_USER = Number(process.env.LIVE_MAX_SESSIONS_PER_USER ?? 2)
+
+const activeSessions = new Map<string, number>()
 
 function allowedOrigins(): string[] {
   return (process.env.ALLOWED_ORIGINS ?? 'http://localhost:5173')
@@ -34,6 +35,19 @@ function reject(socket: Duplex, status: number, reason: string): void {
   socket.destroy()
 }
 
+function acquireSlot(userId: string): boolean {
+  const current = activeSessions.get(userId) ?? 0
+  if (current >= MAX_SESSIONS_PER_USER) return false
+  activeSessions.set(userId, current + 1)
+  return true
+}
+
+function releaseSlot(userId: string): void {
+  const current = activeSessions.get(userId) ?? 0
+  if (current <= 1) activeSessions.delete(userId)
+  else activeSessions.set(userId, current - 1)
+}
+
 function handleConnection(ws: WebSocket, user: User): void {
   let session: QwenRealtimeSession | null = null
   let streamedBytes = 0
@@ -48,6 +62,7 @@ function handleConnection(ws: WebSocket, user: User): void {
     settled = true
     session?.close()
     session = null
+    releaseSlot(user.id)
     console.log(`Live session for ${user.id} ended after ${Math.ceil(streamedBytes / BYTES_PER_SECOND)}s of audio`)
   }
 
@@ -128,6 +143,14 @@ export function attachLiveTranscribe(server: Server): void {
         if (!result) return reject(socket, 401, 'Unauthorized')
 
         wss.handleUpgrade(req, socket, head, (ws) => {
+          if (!acquireSlot(result.user.id)) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: `Maksimal ${MAX_SESSIONS_PER_USER} transkrip langsung berjalan bersamaan. Hentikan sesi lain dulu.`,
+            }))
+            ws.close(1008, 'Terlalu banyak sesi')
+            return
+          }
           handleConnection(ws, result.user)
         })
       })

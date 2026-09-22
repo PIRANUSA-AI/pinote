@@ -10,9 +10,12 @@
     "dev:frontend": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend run build && npm --prefix backend run build",
     "build:backend": "npm --prefix backend run build",
-    "build:frontend": "npm --prefix frontend run build"
+    "build:frontend": "npm --prefix frontend run build",
+    "pack:extension": "node scripts/packExtension.mjs"
   },
   "devDependencies": {
-    "concurrently": "^9.2.3"
+    "concurrently": "^9.2.3",
+    "crx3": "2.0.0",
+    "yazl": "3.3.1"
   }
 }

@@ -20,6 +20,7 @@ const createSchema = z.object({
   sizeBytes: z.number().int().positive().max(MAX_FILE_BYTES),
   durationSec: z.number().int().positive(),
   language: z.enum(['id', 'en', 'auto']).optional(),
+  source: z.enum(['upload', 'meet', 'zoom', 'whatsapp']).optional(),
 })
 
 export const jobsRouter = new Hono<AppEnv>()
@@ -64,6 +65,8 @@ jobsRouter.post('/', async (c) => {
       language: parsed.data.language ?? 'auto',
       storageKey,
       status: 'pending' satisfies JobStatus,
+      source: parsed.data.source ?? 'upload',
+      isPrivate: parsed.data.source === 'whatsapp',
     })
     .returning()
 
@@ -97,6 +100,8 @@ jobsRouter.get('/', async (c) => {
       status: jobs.status,
       createdAt: jobs.createdAt,
       completedAt: jobs.completedAt,
+      source: jobs.source,
+      isPrivate: jobs.isPrivate,
       speakerCount: sql<number | null>`(${jobs.transcript}->>'speakerCount')::int`,
     })
     .from(jobs)
@@ -151,13 +156,14 @@ jobsRouter.get('/:id/audio', requireAuth, async (c) => {
   const id = c.req.param('id')
 
   const [job] = await db
-    .select({ storageKey: jobs.storageKey, userId: jobs.userId, mimeType: jobs.mimeType })
+    .select({ storageKey: jobs.storageKey, userId: jobs.userId, mimeType: jobs.mimeType, isPrivate: jobs.isPrivate })
     .from(jobs)
     .where(eq(jobs.id, id))
     .limit(1)
 
   if (!job) return c.json({ error: 'Job tidak ditemukan' }, 404)
-  if (job.userId !== user.id && !user.isAdmin) return c.json({ error: 'Forbidden' }, 403)
+  const isOwner = job.userId === user.id
+  if (!isOwner && (!user.isAdmin || job.isPrivate)) return c.json({ error: 'Forbidden' }, 403)
   if (!job.storageKey) return c.json({ error: 'Audio tidak tersedia' }, 404)
   if (!(await objectExists(job.storageKey))) {
     return c.json({ error: 'Rekaman audio sudah tidak ada di server' }, 404)
@@ -216,12 +222,16 @@ jobsRouter.post('/:id/share', async (c) => {
       id: jobs.id,
       shareToken: jobs.shareToken,
       shareTokenMom: jobs.shareTokenMom,
+      isPrivate: jobs.isPrivate,
     })
     .from(jobs)
     .where(and(eq(jobs.id, id), eq(jobs.userId, user.id)))
     .limit(1)
 
   if (!job) return c.json({ error: 'Job tidak ditemukan' }, 404)
+  if (job.isPrivate) {
+    return c.json({ error: 'Rekaman privat seperti panggilan WhatsApp tidak bisa dibagikan.' }, 403)
+  }
 
   if (kind === 'internal') {
     if (job.shareToken) {
@@ -441,6 +451,8 @@ function toJobDetail(
     shareToken: includeShareToken ? job.shareToken : undefined,
     shareTokenMom: includeShareToken ? job.shareTokenMom : undefined,
     storageKey: job.storageKey,
+    source: job.source,
+    isPrivate: job.isPrivate,
   }
 }
 

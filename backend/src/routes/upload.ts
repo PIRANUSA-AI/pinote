@@ -23,7 +23,8 @@ uploadRouter.put('/:jobId/storage', async (c) => {
 
   if (!job) return c.json({ error: 'Job tidak ditemukan' }, 404)
   if (!job.storageKey) return c.json({ error: 'Job ini tidak punya storage key' }, 409)
-  if (job.status !== 'pending') {
+  const retryableFailure = job.status === 'failed' && !job.uploadedAt
+  if (job.status !== 'pending' && !retryableFailure) {
     return c.json({ error: `Job sudah ${job.status}, tidak bisa upload ulang` }, 409)
   }
 
@@ -36,7 +37,7 @@ uploadRouter.put('/:jobId/storage', async (c) => {
     return c.json({ error: 'Ukuran upload tidak cocok dengan job yang dibuat' }, 400)
   }
 
-  await db.update(jobs).set({ status: 'uploading' satisfies JobStatus }).where(eq(jobs.id, jobId))
+  await db.update(jobs).set({ status: 'uploading' satisfies JobStatus, errorMessage: null }).where(eq(jobs.id, jobId))
   await cacheJobStatus(jobId, { status: 'uploading', progress: 10 })
 
   try {

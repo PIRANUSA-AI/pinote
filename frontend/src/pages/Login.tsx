@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { ArrowLeft } from '@phosphor-icons/react'
+import { ArrowLeft, DownloadSimple } from '@phosphor-icons/react'
 import { useAuth } from '../hooks/useAuth'
 import { ApiError, api } from '../lib/api'
 import { BrandMark } from '../components/Brand'
@@ -100,6 +100,14 @@ export default function Login() {
         >
           <ArrowLeft size={12} weight="bold" />
           Lihat perkenalan Rekapin
+        </Link>
+
+        <Link
+          to="/extension"
+          className="mt-3 mx-auto flex items-center justify-center gap-1.5 text-xs font-medium text-brand-deep hover:text-navy transition-colors w-fit"
+        >
+          <DownloadSimple size={12} weight="bold" />
+          Unduh extension Chrome dan catatan rilis
         </Link>
       </motion.div>
     </div>

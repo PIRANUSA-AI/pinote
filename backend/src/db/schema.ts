@@ -63,6 +63,8 @@ export const jobs = pgTable(
     speakerNames: jsonb('speaker_names').$type<Record<string, string>>().notNull().default({}),
     attendance: jsonb('attendance').$type<string[]>().default([]),
     errorMessage: text('error_message'),
+    source: text('source').notNull().default('upload'),
+    isPrivate: boolean('is_private').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     uploadedAt: timestamp('uploaded_at', { withTimezone: true }),
     queuedAt: timestamp('queued_at', { withTimezone: true }),

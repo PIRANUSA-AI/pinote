@@ -26,12 +26,16 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,woff2}'],
         runtimeCaching: [],
+        navigateFallbackDenylist: [/^\/downloads\//, /^\/api\//],
       },
     }),
   ],
   server: {
     port: 5173,
     host: true,
+    fs: {
+      allow: ['..'],
+    },
     proxy: {
       '/api': {
         target: 'http://localhost:3000',

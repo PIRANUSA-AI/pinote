@@ -25,6 +25,7 @@ const Admin = lazy(() => import('./pages/Admin'))
 const Playground = lazy(() => import('./pages/Playground'))
 const SearchPage = lazy(() => import('./pages/SearchPage'))
 const NotFound = lazy(() => import('./pages/NotFound'))
+const Extension = lazy(() => import('./pages/Extension'))
 
 function RootPage() {
   const { user, loading } = useAuth()
@@ -65,6 +66,8 @@ function AnimatedRoutes() {
             <Route path="/share/:token" element={<SharedJob />} />
             <Route path="/share/mom/:token" element={<SharedMoM />} />
             <Route path="/tasks/:token" element={<MyTasks />} />
+            <Route path="/extension" element={<Extension />} />
+            <Route path="/changelog" element={<Extension />} />
             <Route
               path="/riwayat"
               element={

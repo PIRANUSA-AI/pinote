@@ -126,7 +126,37 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
         // is already in the database.
         await cacheJobStatus(jobId, { status: 'completed', progress: 100 })
 
-        if (insights.actionItems.length > 0) {
+        if (insights.actionItems.length > 0 && job.isPrivate) {
+          const [owner] = await db
+            .select({ displayName: users.displayName, username: users.username })
+            .from(users)
+            .where(eq(users.id, job.userId))
+            .limit(1)
+          const ownerName = owner?.displayName ?? owner?.username ?? 'Saya'
+          const ownerKey = ownerName.trim().toLowerCase()
+
+          await db
+            .insert(actionItems)
+            .values(
+              insights.actionItems.map((it, i) => {
+                const mentioned = it.owner.trim()
+                const task = mentioned && mentioned.toLowerCase() !== ownerKey ? `${it.task} (terkait ${mentioned})` : it.task
+                return {
+                  id: nanoid(),
+                  jobId,
+                  owner: ownerName,
+                  assigneeId: job.userId,
+                  task,
+                  due: it.due ?? null,
+                  confidence: it.confidence,
+                  order: i,
+                }
+              })
+            )
+            .catch((err) => console.warn(`[${jobId}] Failed to persist private action items:`, err))
+        }
+
+        if (insights.actionItems.length > 0 && !job.isPrivate) {
           await db
             .insert(actionItems)
             .values(

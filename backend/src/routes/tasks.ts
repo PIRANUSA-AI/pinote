@@ -49,6 +49,7 @@ tasksRouter.get('/:token', async (c) => {
     .where(
       and(
         or(sql`${actionItems.jobId} IS NULL`, eq(jobs.status, 'completed')),
+        or(sql`${actionItems.jobId} IS NULL`, eq(jobs.isPrivate, false)),
         or(
           eq(actionItems.assigneeId, user.id),
           sql`LOWER(${actionItems.owner}) = ${matchName}`

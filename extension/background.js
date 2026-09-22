@@ -1,5 +1,7 @@
 import { readConfig } from './config.js'
 
+const ACTIVE_STATUSES = ['starting', 'recording', 'uploading', 'uploadFailed']
+
 const state = {
   status: 'idle',
   lines: [],
@@ -12,24 +14,36 @@ const state = {
   pausedAt: null,
   pausedTotalMs: 0,
   micOn: true,
+  source: null,
+  live: null,
+  upload: null,
 }
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
 
-chrome.storage.local
-  .get('liveState')
-  .then((stored) => {
+chrome.storage.local.remove(['apiBase', 'appBase']).catch(() => {})
+
+async function restoreState() {
+  try {
+    const stored = await chrome.storage.local.get('liveState')
     const saved = stored?.liveState
-    if (!saved || state.status !== 'idle') return
+    if (!saved) return
     Object.assign(state, saved)
-    if (saved.status === 'recording' || saved.status === 'starting' || saved.status === 'uploading') {
-      state.status = 'interrupted'
-      state.paused = false
-      state.pausedAt = null
-      state.error = 'Sesi sebelumnya terputus. Transkrip di bawah tersimpan, tapi rekaman audionya tidak sempat terkirim.'
-    }
-  })
-  .catch(() => {})
+    if (!ACTIVE_STATUSES.includes(saved.status)) return
+    const alive = await chrome.offscreen.hasDocument().catch(() => false)
+    if (alive) return
+    state.status = 'interrupted'
+    state.paused = false
+    state.pausedAt = null
+    state.live = null
+    state.upload = null
+    state.error = 'Sesi sebelumnya terputus sebelum rekaman sempat terkirim. Transkrip langsung di bawah masih tersimpan.'
+  } catch {
+    return
+  }
+}
+
+const ready = restoreState()
 
 function broadcast() {
   const snapshot = { ...state }
@@ -49,6 +63,9 @@ function reset() {
   state.pausedAt = null
   state.pausedTotalMs = 0
   state.micOn = true
+  state.source = null
+  state.live = null
+  state.upload = null
 }
 
 async function ensureOffscreen() {
@@ -66,14 +83,18 @@ async function closeOffscreen() {
   if (existing) await chrome.offscreen.closeDocument()
 }
 
-async function startRecording(tabId, language) {
-  if (state.status === 'recording' || state.status === 'uploading') {
+async function startRecording(tabId, language, source) {
+  if (state.status === 'uploadFailed' || state.status === 'uploading') {
+    return { ok: false, error: 'Masih ada rekaman yang belum terkirim. Kirim ulang atau buang dulu.' }
+  }
+  if (state.status === 'recording' || state.status === 'starting') {
     return { ok: false, error: 'Transkrip langsung sudah berjalan' }
   }
 
   reset()
   state.status = 'starting'
   state.tabId = tabId
+  state.source = source ?? 'upload'
   broadcast()
 
   try {
@@ -87,6 +108,7 @@ async function startRecording(tabId, language) {
       streamId,
       language,
       apiBase,
+      source: state.source,
     })
 
     if (!response || !response.ok) {
@@ -132,6 +154,8 @@ async function stopRecording() {
   }
 
   state.status = 'uploading'
+  state.live = null
+  state.upload = null
   broadcast()
 
   try {
@@ -139,71 +163,112 @@ async function stopRecording() {
     if (!response || !response.ok) {
       throw new Error(response && response.error ? response.error : 'Gagal menyimpan rekaman')
     }
-    state.jobId = response.jobId
-    state.status = 'done'
-    return { ok: true, jobId: response.jobId }
+    return { ok: true }
   } catch (err) {
     state.status = 'error'
     state.error = err instanceof Error ? err.message : String(err)
-    return { ok: false, error: state.error }
-  } finally {
     await closeOffscreen().catch(() => {})
     broadcast()
+    return { ok: false, error: state.error }
   }
+}
+
+async function retryUpload() {
+  if (state.status !== 'uploadFailed') return { ok: false, error: 'Tidak ada rekaman yang menunggu dikirim' }
+  const response = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'retryUpload' }).catch(() => null)
+  if (!response || !response.ok) {
+    state.status = 'interrupted'
+    state.error = 'Rekaman tidak lagi tersedia untuk dikirim ulang. Transkrip langsung di bawah masih tersimpan.'
+    broadcast()
+    return { ok: false, error: state.error }
+  }
+  state.status = 'uploading'
+  state.error = null
+  broadcast()
+  return { ok: true }
+}
+
+async function discardUpload() {
+  await chrome.runtime.sendMessage({ target: 'offscreen', type: 'discardUpload' }).catch(() => null)
+  await closeOffscreen().catch(() => {})
+  reset()
+  broadcast()
+  chrome.storage.local.remove('liveState').catch(() => {})
+  return { ok: true }
+}
+
+function handleOffscreenEvent(message) {
+  if (message.type === 'livePartial') {
+    state.partial = message.text
+  } else if (message.type === 'liveFinal') {
+    if (message.text) state.lines.push({ text: message.text, at: Date.now(), speaker: message.speaker ?? null })
+    state.partial = ''
+  } else if (message.type === 'liveError') {
+    state.error = message.message
+  } else if (message.type === 'liveStatus') {
+    state.live = {
+      status: message.status,
+      attempt: message.attempt ?? 0,
+      max: message.max ?? 0,
+      retryAt: message.retryAt ?? null,
+    }
+  } else if (message.type === 'micUnavailable') {
+    state.micOn = false
+    state.error = 'Mikrofon tidak bisa diakses, jadi suara kamu sendiri tidak ikut terekam. Hanya suara peserta lain yang tertangkap.'
+  } else if (message.type === 'uploadStatus') {
+    if (message.status === 'uploading') {
+      state.status = 'uploading'
+      state.upload = null
+      state.error = null
+    } else if (message.status === 'retrying') {
+      state.status = 'uploading'
+      state.upload = {
+        attempt: message.attempt,
+        max: message.max,
+        retryAt: message.retryAt,
+        message: message.message,
+      }
+    } else if (message.status === 'done') {
+      state.status = 'done'
+      state.jobId = message.jobId
+      state.upload = null
+      state.error = null
+      closeOffscreen().catch(() => {})
+    } else if (message.status === 'failed') {
+      state.status = 'uploadFailed'
+      state.upload = null
+      state.error = message.message
+    }
+  } else {
+    return
+  }
+  broadcast()
+}
+
+async function handleServiceMessage(message) {
+  if (message.type === 'getState') return { ...state }
+  if (message.type === 'start') return startRecording(message.tabId, message.language, message.source)
+  if (message.type === 'pause') return setPaused(Boolean(message.paused))
+  if (message.type === 'stop') return stopRecording()
+  if (message.type === 'retryUpload') return retryUpload()
+  if (message.type === 'discardUpload') return discardUpload()
+  if (message.type === 'reset') {
+    reset()
+    broadcast()
+    chrome.storage.local.remove('liveState').catch(() => {})
+    return { ok: true }
+  }
+  return { ok: false, error: 'Perintah tidak dikenal' }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target === 'background') {
-    if (message.type === 'livePartial') {
-      state.partial = message.text
-      broadcast()
-    } else if (message.type === 'liveFinal') {
-      if (message.text) state.lines.push({ text: message.text, at: Date.now(), speaker: message.speaker ?? null })
-      state.partial = ''
-      broadcast()
-    } else if (message.type === 'liveError') {
-      state.error = message.message
-      broadcast()
-    } else if (message.type === 'micUnavailable') {
-      state.micOn = false
-      state.error = 'Mikrofon tidak bisa diakses, jadi suara kamu sendiri tidak ikut terekam. Hanya suara peserta lain yang tertangkap.'
-      broadcast()
-    } else if (message.type === 'uploadStarted') {
-      state.status = 'uploading'
-      broadcast()
-    }
+    ready.then(() => handleOffscreenEvent(message))
     return undefined
   }
 
   if (message.target !== 'service') return undefined
 
-  if (message.type === 'getState') {
-    sendResponse({ ...state })
-    return undefined
-  }
-
-  if (message.type === 'start') {
-    startRecording(message.tabId, message.language).then(sendResponse)
-    return true
-  }
-
-  if (message.type === 'pause') {
-    setPaused(Boolean(message.paused)).then(sendResponse)
-    return true
-  }
-
-  if (message.type === 'stop') {
-    stopRecording().then(sendResponse)
-    return true
-  }
-
-  if (message.type === 'reset') {
-    reset()
-    broadcast()
-    chrome.storage.local.remove('liveState').catch(() => {})
-    sendResponse({ ok: true })
-    return undefined
-  }
-
-  return undefined
+  ready.then(() => handleServiceMessage(message)).then(sendResponse)
+  return true
 })
