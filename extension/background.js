@@ -8,12 +8,32 @@ const state = {
   error: null,
   tabId: null,
   startedAt: null,
+  paused: false,
+  pausedAt: null,
+  pausedTotalMs: 0,
 }
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
 
+chrome.storage.local
+  .get('liveState')
+  .then((stored) => {
+    const saved = stored?.liveState
+    if (!saved || state.status !== 'idle') return
+    Object.assign(state, saved)
+    if (saved.status === 'recording' || saved.status === 'starting' || saved.status === 'uploading') {
+      state.status = 'interrupted'
+      state.paused = false
+      state.pausedAt = null
+      state.error = 'Sesi sebelumnya terputus. Transkrip di bawah tersimpan, tapi rekaman audionya tidak sempat terkirim.'
+    }
+  })
+  .catch(() => {})
+
 function broadcast() {
-  chrome.runtime.sendMessage({ target: 'panel', type: 'state', state: { ...state } }).catch(() => {})
+  const snapshot = { ...state }
+  chrome.runtime.sendMessage({ target: 'panel', type: 'state', state: snapshot }).catch(() => {})
+  chrome.storage.local.set({ liveState: snapshot }).catch(() => {})
 }
 
 function reset() {
@@ -24,6 +44,9 @@ function reset() {
   state.error = null
   state.tabId = null
   state.startedAt = null
+  state.paused = false
+  state.pausedAt = null
+  state.pausedTotalMs = 0
 }
 
 async function ensureOffscreen() {
@@ -79,6 +102,26 @@ async function startRecording(tabId, language) {
     broadcast()
     return { ok: false, error: state.error }
   }
+}
+
+async function setPaused(paused) {
+  if (state.status !== 'recording') return { ok: false, error: 'Tidak ada sesi aktif' }
+  if (state.paused === paused) return { ok: true, paused }
+
+  const response = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'setPaused', paused })
+  if (!response || !response.ok) {
+    return { ok: false, error: response && response.error ? response.error : 'Gagal mengubah jeda' }
+  }
+
+  state.paused = paused
+  if (paused) {
+    state.pausedAt = Date.now()
+  } else if (state.pausedAt) {
+    state.pausedTotalMs += Date.now() - state.pausedAt
+    state.pausedAt = null
+  }
+  broadcast()
+  return { ok: true, paused }
 }
 
 async function stopRecording() {
@@ -138,6 +181,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true
   }
 
+  if (message.type === 'pause') {
+    setPaused(Boolean(message.paused)).then(sendResponse)
+    return true
+  }
+
   if (message.type === 'stop') {
     stopRecording().then(sendResponse)
     return true
@@ -146,6 +194,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'reset') {
     reset()
     broadcast()
+    chrome.storage.local.remove('liveState').catch(() => {})
     sendResponse({ ok: true })
     return undefined
   }

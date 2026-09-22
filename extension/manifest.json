@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Rekapin Meeting Recorder",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Transkrip langsung rapat Google Meet dan Zoom, lalu kirim ke Rekapin.",
   "minimum_chrome_version": "116",
   "permissions": ["tabCapture", "offscreen", "storage", "tabs", "sidePanel"],

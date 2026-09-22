@@ -28,12 +28,12 @@
     </section>
 
     <main id="mainView" class="mainView" hidden>
-      <div class="sheet">
-        <div class="identity">
+      <div id="sheet" class="sheet">
+        <div id="identityRow" class="identity">
           <img class="markSmall" src="icons/logo.svg" alt="" />
           <div class="identityText">
             <span id="userName" class="userName"></span>
-            <span class="credit">Transkrip tanpa batas</span>
+            <span class="tagline">Transkrip tanpa batas</span>
           </div>
         </div>
 
@@ -45,12 +45,20 @@
           <button class="segment" type="button" data-value="en">English</button>
         </div>
 
-        <button id="recordButton" class="primaryAction" type="button">
-          <span id="recordDot" class="recordDot" hidden></span>
-          <span id="recordLabel">Mulai transkrip</span>
-        </button>
+        <div class="actionRow">
+          <button id="pauseButton" class="secondaryAction" type="button" hidden>Jeda</button>
+          <button id="recordButton" class="primaryAction grow" type="button">
+            <span id="recordDot" class="recordDot" hidden></span>
+            <span id="recordLabel">Mulai Rekapin</span>
+          </button>
+        </div>
 
         <div id="errorBox" class="errorBox" hidden></div>
+
+        <div id="recoveryRow" class="actionRow" hidden>
+          <button id="copyTranscript" class="secondaryAction grow" type="button">Salin transkrip</button>
+          <button id="discardSession" class="secondaryAction" type="button">Buang</button>
+        </div>
 
         <div id="resultBox" class="resultBox" hidden>
           <span>Rekaman terkirim. Transkrip final dengan pemisahan pembicara sedang diproses.</span>
@@ -60,13 +68,43 @@
 
       <div class="transcriptWrap">
         <div class="transcriptHead">
-          <span class="transcriptTitle">Transkrip langsung</span>
-          <span id="lineCount" class="lineCount"></span>
+          <div id="headDefault" class="headRow">
+            <span class="transcriptTitle">Transkrip langsung</span>
+            <div class="headRight">
+              <span id="lineCount" class="lineCount"></span>
+              <button id="searchToggle" class="miniButton" type="button" title="Cari di transkrip" aria-label="Cari di transkrip">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+                  <circle cx="11" cy="11" r="7"></circle>
+                  <path d="M20 20l-3.6-3.6"></path>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div id="headSearch" class="headRow" hidden>
+            <input id="searchInput" class="searchInput" type="search" placeholder="Cari kata atau nama" spellcheck="false" />
+            <span id="searchCount" class="searchCount"></span>
+            <button id="searchPrev" class="miniButton" type="button" title="Hasil sebelumnya" aria-label="Hasil sebelumnya">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 15l-6-6-6 6"></path>
+              </svg>
+            </button>
+            <button id="searchNext" class="miniButton" type="button" title="Hasil berikutnya" aria-label="Hasil berikutnya">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6 9l6 6 6-6"></path>
+              </svg>
+            </button>
+            <button id="searchClose" class="miniButton" type="button" title="Tutup pencarian" aria-label="Tutup pencarian">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+                <path d="M6 6l12 12M18 6L6 18"></path>
+              </svg>
+            </button>
+          </div>
         </div>
         <div id="emptyState" class="emptyState">
           <div class="emptyMark"></div>
           <p class="emptyTitle">Belum ada yang terdengar</p>
-          <p class="hint">Buka tab Google Meet atau Zoom web, lalu tekan Mulai transkrip.</p>
+          <p class="hint">Buka tab Google Meet atau Zoom web, lalu tekan Mulai Rekapin.</p>
         </div>
         <div id="liveLines" class="liveLines" hidden></div>
         <button id="jumpLatest" class="jumpLatest" type="button" hidden>Ke terbaru</button>

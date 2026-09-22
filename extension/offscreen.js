@@ -74,6 +74,7 @@ async function start({ streamId, language, apiBase }) {
   })
 
   pcmNode.port.onmessage = (event) => {
+    if (capture?.paused) return
     if (socket.readyState === WebSocket.OPEN) socket.send(event.data)
   }
 
@@ -96,6 +97,7 @@ async function start({ streamId, language, apiBase }) {
     startedAt: Date.now(),
     language,
     apiBase,
+    paused: false,
   }
 
   report({ type: 'captureStarted' })
@@ -175,8 +177,21 @@ async function stop() {
   return { ok: true, jobId }
 }
 
+function setPaused(paused) {
+  if (!capture) return { ok: false, error: 'Tidak ada sesi aktif' }
+  capture.paused = paused
+  if (paused && capture.recorder.state === 'recording') capture.recorder.pause()
+  if (!paused && capture.recorder.state === 'paused') capture.recorder.resume()
+  return { ok: true, paused }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target !== 'offscreen') return undefined
+
+  if (message.type === 'setPaused') {
+    sendResponse(setPaused(Boolean(message.paused)))
+    return undefined
+  }
 
   if (message.type === 'startCapture') {
     start(message)
