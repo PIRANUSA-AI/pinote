@@ -7,6 +7,7 @@ import {
   Check,
   Copy,
   DownloadSimple,
+  FolderOpen,
   Info,
   PushPin,
   ShieldCheck,
@@ -31,6 +32,7 @@ interface PackageFile {
 interface LatestPackage {
   version: string
   extensionId: string
+  zip: PackageFile
   crx: PackageFile | null
   builtAt: string
 }
@@ -51,26 +53,19 @@ function parseChangelog(raw: string): Release[] {
   return releases
 }
 
-const BROWSERS: Record<Browser, { label: string; page: string; toggleWhere: string; loadLabel: string; addLabel: string }> = {
+const BROWSERS: Record<Browser, { label: string; page: string; toggleWhere: string; loadLabel: string }> = {
   chrome: {
     label: 'Chrome',
     page: 'chrome://extensions',
     toggleWhere: 'di pojok kanan atas',
     loadLabel: 'Muat yang belum dibuka (Load unpacked)',
-    addLabel: 'Tambahkan extension (Add extension)',
   },
   edge: {
     label: 'Edge',
     page: 'edge://extensions',
     toggleWhere: 'di panel sebelah kiri',
     loadLabel: 'Muat yang belum dikemas (Load unpacked)',
-    addLabel: 'Tambahkan ekstensi (Add extension)',
   },
-}
-
-function fileNameOf(url: string | undefined): string {
-  if (!url) return 'file CRX'
-  return url.split('/').pop() ?? 'file CRX'
 }
 
 export default function Extension() {
@@ -99,7 +94,7 @@ export default function Extension() {
       }
       if (!response.ok) throw new Error(String(response.status))
       const data = (await response.json()) as LatestPackage
-      if (!data?.crx?.url) {
+      if (!data?.zip?.url) {
         setLoadState('empty')
         return
       }
@@ -137,8 +132,12 @@ export default function Extension() {
   }
 
   const current = BROWSERS[browser]
-  const crxFile = fileNameOf(latest?.crx?.url)
   const steps = [
+    {
+      icon: FolderOpen,
+      title: 'Ekstrak ZIP ke folder tetap',
+      body: 'Klik kanan file yang baru diunduh, pilih Ekstrak Semua, lalu simpan di folder yang tidak akan kamu hapus, misalnya Dokumen\\Rekapin. Browser membaca extension dari folder itu setiap kali dibuka.',
+    },
     {
       icon: Copy,
       title: `Buka halaman extension ${current.label}`,
@@ -148,12 +147,12 @@ export default function Extension() {
     {
       icon: ToggleRight,
       title: 'Nyalakan Mode pengembang',
-      body: `Tombolnya ada ${current.toggleWhere}. Label Inggrisnya Developer mode. Setelah menyala, tutup lalu buka lagi ${current.label} supaya file CRX diterima.`,
+      body: `Tombolnya ada ${current.toggleWhere}. Label Inggrisnya Developer mode.`,
     },
     {
       icon: UploadSimple,
-      title: 'Seret file CRX ke halaman itu',
-      body: `Buka folder Unduhan, seret ${crxFile} ke halaman extension, lalu pilih ${current.addLabel}. Kartu Rekapin Meeting Recorder akan muncul.`,
+      title: `Klik ${current.loadLabel}`,
+      body: 'Pilih folder hasil ekstrak tadi, yaitu folder yang berisi file manifest.json. Rekapin langsung muncul di daftar extension.',
     },
     {
       icon: PushPin,
@@ -243,21 +242,33 @@ export default function Extension() {
                 </span>
               </div>
 
-              {latest.crx && (
-                <a
-                  href={latest.crx.url}
-                  download
-                  onClick={handleDownload}
-                  className="btn-primary w-full justify-center gap-2 py-3 text-[15px]"
-                >
-                  <DownloadSimple size={18} weight="bold" />
-                  Unduh extension CRX ({formatBytes(latest.crx.size)})
-                </a>
-              )}
+              <a
+                href={latest.zip.url}
+                download
+                onClick={handleDownload}
+                className="btn-primary w-full justify-center gap-2 py-3 text-[15px]"
+              >
+                <DownloadSimple size={18} weight="bold" />
+                Unduh extension ({formatBytes(latest.zip.size)})
+              </a>
 
               {downloaded && (
                 <p className="rounded-xl bg-brand-soft px-4 py-2.5 text-[13px] text-brand-deep">
-                  Unduhan dimulai. Ikuti empat langkah di bawah untuk memasangnya.
+                  Unduhan dimulai. Ikuti lima langkah di bawah untuk memasangnya.
+                </p>
+              )}
+
+              {latest.crx && (
+                <p className="text-[12.5px] leading-relaxed text-slate-400">
+                  Untuk admin IT yang memasang lewat kebijakan perusahaan tersedia{' '}
+                  <a
+                    href={latest.crx.url}
+                    download
+                    className="font-medium text-brand-deep underline underline-offset-2"
+                  >
+                    file CRX
+                  </a>
+                  . Pengguna biasa cukup gunakan tombol di atas.
                 </p>
               )}
             </div>
@@ -268,7 +279,7 @@ export default function Extension() {
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
               <p className="eyebrow">Cara memasang</p>
-              <h2 className="mt-1 text-xl font-semibold tracking-tight text-navy">Empat langkah, sekali saja</h2>
+              <h2 className="mt-1 text-xl font-semibold tracking-tight text-navy">Lima langkah, sekali saja</h2>
             </div>
             <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
               {(Object.keys(BROWSERS) as Browser[]).map((key) => (
@@ -327,24 +338,12 @@ export default function Extension() {
           </ol>
 
           <div className="card mt-5 flex gap-3 p-4">
-            <Info size={18} weight="bold" className="mt-0.5 flex-shrink-0 text-amber-600" />
-            <div>
-              <p className="font-semibold text-navy">Kalau file CRX ditolak</p>
-              <p className="mt-1 text-[13.5px] leading-relaxed text-ink-muted">
-                Bila muncul pesan CRX_REQUIRED_PROOF_MISSING, pastikan Mode pengembang sudah menyala, tutup lalu buka lagi{' '}
-                {current.label}, kemudian seret ulang. Bila masih ditolak, ekstrak file CRX pakai 7zip ke folder tetap, lalu
-                klik {current.loadLabel} dan pilih folder itu.
-              </p>
-            </div>
-          </div>
-
-          <div className="card mt-3 flex gap-3 p-4">
             <ArrowsClockwise size={18} weight="bold" className="mt-0.5 flex-shrink-0 text-brand" />
             <div>
               <p className="font-semibold text-navy">Cara memperbarui</p>
               <p className="mt-1 text-[13.5px] leading-relaxed text-ink-muted">
-                Panel Rekapin akan memberi tahu bila ada versi baru. Unduh CRX terbaru lalu seret lagi ke halaman extension.
-                Chrome memperbarui Rekapin yang sudah terpasang, jadi login kamu tetap ada dan tidak perlu memasang dari awal.
+                Panel Rekapin akan memberi tahu bila ada versi baru. Unduh ZIP terbaru, ekstrak dan timpa isi folder yang sama,
+                lalu klik ikon muat ulang di kartu Rekapin pada halaman extension. Tidak perlu memasang dari awal.
               </p>
             </div>
           </div>

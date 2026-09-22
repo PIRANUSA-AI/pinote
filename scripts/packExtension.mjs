@@ -93,27 +93,25 @@ async function main() {
 
   mkdirSync(outDir, { recursive: true })
 
-  let crx = null
+  const zipName = `${base}.zip`
+  const zipPath = join(outDir, zipName)
+  await writeZip(files, zipPath)
+  console.log(`ZIP siap: ${zipName} (${statSync(zipPath).size} byte)`)
+
+  let crxName = null
   if (signingKey) {
-    const zipPath = join(tmpdir(), `rekapinPack${process.pid}${Date.now()}.zip`)
-    try {
-      await writeZip(files, zipPath)
-      const crxName = `${base}.crx`
-      const crxPath = join(outDir, crxName)
-      await writeCrx(zipPath, crxPath)
-      crx = { url: `/downloads/${crxName}`, size: statSync(crxPath).size }
-      console.log(`CRX siap: ${crxName}, ID ${EXPECTED_ID}`)
-    } finally {
-      rmSync(zipPath, { force: true })
-    }
+    crxName = `${base}.crx`
+    await writeCrx(zipPath, join(outDir, crxName))
+    console.log(`CRX siap: ${crxName}, ID ${EXPECTED_ID}`)
   } else {
-    console.warn('EXTENSION_SIGNING_KEY tidak diset, jadi tidak ada paket yang diterbitkan.')
+    console.warn('EXTENSION_SIGNING_KEY tidak diset, jadi hanya ZIP yang dibuat. CRX dilewati.')
   }
 
   const latest = {
     version,
     extensionId: EXPECTED_ID,
-    crx,
+    zip: { url: `/downloads/${zipName}`, size: statSync(zipPath).size },
+    crx: crxName ? { url: `/downloads/${crxName}`, size: statSync(join(outDir, crxName)).size } : null,
     builtAt: new Date().toISOString(),
   }
   writeFileSync(join(outDir, 'latest.json'), `${JSON.stringify(latest, null, 2)}\n`)
