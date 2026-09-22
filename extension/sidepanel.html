@@ -6,58 +6,66 @@
     <title>Rekapin</title>
   </head>
   <body>
-    <header class="topBar">
-      <div class="brandRow">
-        <span id="statusDot" class="statusDot"></span>
-        <span class="brand">Rekapin</span>
-      </div>
-      <button id="settingsToggle" class="iconButton" type="button" title="Pengaturan">&#9881;</button>
-    </header>
-
-    <section id="settingsPanel" class="settingsPanel" hidden>
-      <label class="fieldLabel" for="apiBaseInput">API base</label>
-      <input id="apiBaseInput" class="field" type="text" spellcheck="false" />
-      <label class="fieldLabel" for="appBaseInput">App base</label>
-      <input id="appBaseInput" class="field" type="text" spellcheck="false" />
-      <button id="saveSettings" class="buttonGhost" type="button">Simpan</button>
-    </section>
-
-    <div id="loadingView" class="centerNote">Memuat...</div>
+    <div id="loadingView" class="bootView">
+      <div class="spinner"></div>
+    </div>
 
     <section id="loginView" class="loginView" hidden>
-      <p class="note">Masuk dulu ke Rekapin, lalu panel ini otomatis terbuka sendiri.</p>
-      <button id="loginButton" class="buttonPrimary" type="button">Masuk ke Rekapin</button>
+      <img class="mark" src="icons/logo.svg" alt="" />
+      <p class="eyebrow">Rekapin by Contrivent</p>
+      <h1 class="display">Masuk</h1>
+      <p class="subtle">Hanya untuk @piranusa.com atau @contrivent.com</p>
+      <button id="loginButton" class="googleButton" type="button">
+        <svg viewBox="0 0 48 48" width="17" height="17" aria-hidden="true">
+          <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+          <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+          <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+          <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+        </svg>
+        <span>Masuk dengan Google</span>
+      </button>
+      <p class="hint">Tab login akan terbuka. Setelah selesai, panel ini menyesuaikan sendiri.</p>
     </section>
 
     <main id="mainView" class="mainView" hidden>
-      <div class="controlBar">
-        <div class="userRow">
-          <span id="userName" class="userName"></span>
-          <span id="userCredit" class="credit"></span>
+      <div class="sheet">
+        <div class="identity">
+          <img class="markSmall" src="icons/logo.svg" alt="" />
+          <div class="identityText">
+            <span id="userName" class="userName"></span>
+            <span id="userCredit" class="credit"></span>
+          </div>
         </div>
 
         <div id="tabState" class="tabState"></div>
 
-        <div class="actionRow">
-          <select id="languageSelect" class="field compact" title="Bahasa">
-            <option value="auto">Auto</option>
-            <option value="id" selected>Indonesia</option>
-            <option value="en">English</option>
-          </select>
-          <button id="recordButton" class="buttonPrimary grow" type="button">Mulai transkrip</button>
+        <div id="languageGroup" class="segmented" role="group" aria-label="Bahasa">
+          <button class="segment" type="button" data-value="auto">Auto</button>
+          <button class="segment active" type="button" data-value="id">Indonesia</button>
+          <button class="segment" type="button" data-value="en">English</button>
         </div>
+
+        <button id="recordButton" class="primaryAction" type="button">
+          <span id="recordDot" class="recordDot" hidden></span>
+          <span id="recordLabel">Mulai transkrip</span>
+        </button>
 
         <div id="errorBox" class="errorBox" hidden></div>
 
         <div id="resultBox" class="resultBox" hidden>
           <span>Rekaman terkirim. Transkrip final dengan pemisahan pembicara sedang diproses.</span>
-          <button id="openJob" class="buttonGhost" type="button">Buka hasil</button>
+          <button id="openJob" class="ghostButton" type="button">Buka hasil</button>
         </div>
       </div>
 
       <div class="transcriptWrap">
+        <div class="transcriptHead">
+          <span class="transcriptTitle">Transkrip langsung</span>
+          <span id="lineCount" class="lineCount"></span>
+        </div>
         <div id="emptyState" class="emptyState">
-          <p>Belum ada transkrip.</p>
+          <div class="emptyMark"></div>
+          <p class="emptyTitle">Belum ada yang terdengar</p>
           <p class="hint">Buka tab Google Meet atau Zoom web, lalu tekan Mulai transkrip.</p>
         </div>
         <div id="liveLines" class="liveLines" hidden></div>

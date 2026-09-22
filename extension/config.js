@@ -8,10 +8,3 @@ export async function readConfig() {
     appBase: (stored.appBase || DEFAULT_APP_BASE).replace(/\/+$/, ''),
   }
 }
-
-export async function writeConfig(apiBase, appBase) {
-  await chrome.storage.local.set({
-    apiBase: apiBase.replace(/\/+$/, ''),
-    appBase: appBase.replace(/\/+$/, ''),
-  })
-}

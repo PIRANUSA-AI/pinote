@@ -1,4 +1,4 @@
-import { readConfig, writeConfig } from './config.js'
+import { readConfig } from './config.js'
 
 const el = (id) => document.getElementById(id)
 let config = null
@@ -10,6 +10,7 @@ let renderedCount = 0
 let partialNode = null
 let stickToBottom = true
 let latestState = null
+let language = 'id'
 
 function show(node, visible) {
   node.hidden = !visible
@@ -75,19 +76,21 @@ function buildLine(entry, startedAt) {
   const row = document.createElement('div')
   row.className = 'liveLine'
 
-  if (entry.speaker) {
-    const speaker = document.createElement('span')
-    speaker.className = 'speaker'
-    speaker.textContent = entry.speaker
-    if (startedAt && entry.at) {
-      const stamp = document.createElement('span')
-      stamp.className = 'stamp'
-      stamp.textContent = formatClock(entry.at - startedAt)
-      speaker.appendChild(stamp)
-    }
-    row.appendChild(speaker)
+  const header = document.createElement('div')
+  header.className = 'speaker'
+
+  const who = document.createElement('span')
+  who.textContent = entry.speaker ?? 'Rapat'
+  header.appendChild(who)
+
+  if (startedAt && entry.at) {
+    const stamp = document.createElement('span')
+    stamp.className = 'stamp'
+    stamp.textContent = formatClock(entry.at - startedAt)
+    header.appendChild(stamp)
   }
 
+  row.appendChild(header)
   row.appendChild(document.createTextNode(entry.text))
   return row
 }
@@ -120,8 +123,9 @@ function renderTranscript(state) {
   }
 
   const hasContent = entries.length > 0 || Boolean(state.partial)
-  show(el('liveLines'), hasContent)
+  show(lines, hasContent)
   show(el('emptyState'), !hasContent)
+  el('lineCount').textContent = entries.length > 0 ? `${entries.length} baris` : ''
 
   if (stickToBottom) scrollToLatest()
 }
@@ -132,7 +136,7 @@ function renderControls(state) {
   const button = el('recordButton')
   const kind = meetingKind(activeTab?.url)
 
-  el('statusDot').className = recording ? 'statusDot live' : 'statusDot'
+  show(el('recordDot'), recording)
 
   if (recording) {
     el('tabState').textContent = state.startedAt
@@ -140,17 +144,17 @@ function renderControls(state) {
       : 'Menyiapkan...'
     el('tabState').className = 'tabState active'
     button.disabled = false
-    button.textContent = 'Berhenti dan kirim'
-    button.className = 'buttonPrimary grow recording'
+    button.className = 'primaryAction recording'
+    el('recordLabel').textContent = 'Berhenti dan kirim'
   } else if (uploading) {
     el('tabState').textContent = 'Mengirim rekaman ke Rekapin'
     el('tabState').className = 'tabState'
     button.disabled = true
-    button.textContent = 'Mengirim...'
-    button.className = 'buttonPrimary grow'
+    button.className = 'primaryAction'
+    el('recordLabel').textContent = 'Mengirim...'
   } else {
-    button.className = 'buttonPrimary grow'
-    button.textContent = 'Mulai transkrip'
+    button.className = 'primaryAction'
+    el('recordLabel').textContent = 'Mulai transkrip'
     if (kind) {
       el('tabState').textContent = `${kind} terdeteksi di tab ini`
       el('tabState').className = 'tabState'
@@ -192,16 +196,13 @@ el('liveLines').addEventListener('scroll', () => {
 
 el('jumpLatest').addEventListener('click', scrollToLatest)
 
-el('settingsToggle').addEventListener('click', () => {
-  const panel = el('settingsPanel')
-  panel.hidden = !panel.hidden
-})
-
-el('saveSettings').addEventListener('click', async () => {
-  await writeConfig(el('apiBaseInput').value.trim(), el('appBaseInput').value.trim())
-  config = await readConfig()
-  el('settingsPanel').hidden = true
-  await syncAuth()
+el('languageGroup').addEventListener('click', (event) => {
+  const segment = event.target.closest('.segment')
+  if (!segment) return
+  for (const node of el('languageGroup').querySelectorAll('.segment')) {
+    node.classList.toggle('active', node === segment)
+  }
+  language = segment.dataset.value
 })
 
 el('loginButton').addEventListener('click', async () => {
@@ -230,7 +231,7 @@ el('recordButton').addEventListener('click', async () => {
     target: 'service',
     type: 'start',
     tabId: activeTab.id,
-    language: el('languageSelect').value,
+    language,
   })
   await pullState()
 })
@@ -240,11 +241,15 @@ chrome.tabs.onActivated.addListener(async () => {
   if (latestState) renderControls(latestState)
 })
 
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
+  if (changeInfo.url && tabId === activeTab?.id) {
+    await loadTab()
+    if (latestState) renderControls(latestState)
+  }
+})
+
 async function init() {
   config = await readConfig()
-  el('apiBaseInput').value = config.apiBase
-  el('appBaseInput').value = config.appBase
-
   await loadTab()
   await syncAuth()
   show(el('loadingView'), false)
