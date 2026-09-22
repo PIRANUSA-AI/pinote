@@ -7,6 +7,8 @@
   "permissions": ["tabCapture", "desktopCapture", "contextMenus", "offscreen", "storage", "tabs", "sidePanel"],
   "host_permissions": [
     "https://rekapin.contrivent.com/*",
+    "http://localhost:3000/*",
+    "http://localhost:5173/*",
     "https://meet.google.com/*",
     "https://*.zoom.us/*",
     "https://web.whatsapp.com/*"

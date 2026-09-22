@@ -23,6 +23,7 @@ const state = {
   live: null,
   upload: null,
   background: null,
+  captionsOn: null,
   utteranceStart: null,
 }
 
@@ -44,6 +45,7 @@ chrome.runtime.onInstalled.addListener(() => {
 
 let speakerEvents = []
 let selfName = 'Saya'
+let lastLiveError = null
 
 chrome.storage.local
   .get('displayName')
@@ -84,6 +86,12 @@ function dominantName(from, to) {
     }
   }
   return best
+}
+
+function clearLiveError() {
+  if (!state.error || state.error !== lastLiveError) return
+  state.error = null
+  lastLiveError = null
 }
 
 function resolveSpeaker(source, from, to) {
@@ -172,6 +180,7 @@ function reset() {
   state.source = null
   state.live = null
   state.upload = null
+  state.captionsOn = null
   state.utteranceStart = null
 }
 
@@ -190,7 +199,7 @@ async function closeOffscreen() {
   if (existing) await chrome.offscreen.closeDocument()
 }
 
-async function startRecording(tabId, language, source, mode) {
+async function startRecording(tabId, language, source, mode, skipInsights) {
   if (state.status === 'uploadFailed') {
     return { ok: false, error: 'Rekaman sebelumnya belum terkirim. Kirim ulang atau buang dulu.' }
   }
@@ -226,6 +235,7 @@ async function startRecording(tabId, language, source, mode) {
       language,
       apiBase,
       source: state.source,
+      skipInsights: Boolean(skipInsights),
     })
 
     if (!response || !response.ok) {
@@ -245,6 +255,19 @@ async function startRecording(tabId, language, source, mode) {
   }
 }
 
+async function cancelRecording() {
+  if (state.status !== 'recording' && state.status !== 'starting') {
+    return { ok: false, error: 'Tidak ada sesi aktif' }
+  }
+  await chrome.runtime.sendMessage({ target: 'offscreen', type: 'cancelCapture' }).catch(() => null)
+  const background = state.background
+  reset()
+  state.background = background
+  broadcast()
+  chrome.storage.local.remove('liveState').catch(() => {})
+  return { ok: true }
+}
+
 async function startFromInvocation(tab) {
   if (!tab?.id) return
   if (state.status === 'recording') {
@@ -252,7 +275,9 @@ async function startFromInvocation(tab) {
     return
   }
   const language = await storedLanguage()
-  await startRecording(tab.id, language, sourceFor(tab.url), 'invoke')
+  const stored = await chrome.storage.local.get('autoInsights').catch(() => null)
+  const skipInsights = stored?.autoInsights === false
+  await startRecording(tab.id, language, sourceFor(tab.url), 'invoke', skipInsights)
 }
 
 async function setPaused(paused) {
@@ -330,6 +355,7 @@ function handleOffscreenEvent(message) {
     if (!state.partial) state.utteranceStart = Date.now()
     state.partial = message.text
   } else if (message.type === 'liveFinal') {
+    clearLiveError()
     const endedAt = Date.now()
     const startedAt = state.utteranceStart ?? endedAt - 4000
     if (message.text) {
@@ -347,7 +373,9 @@ function handleOffscreenEvent(message) {
     state.utteranceStart = null
   } else if (message.type === 'liveError') {
     state.error = message.message
+    lastLiveError = message.message
   } else if (message.type === 'liveStatus') {
+    if (message.status === 'connected') clearLiveError()
     state.live = {
       status: message.status,
       attempt: message.attempt ?? 0,
@@ -417,7 +445,17 @@ async function handleServiceMessage(message) {
     noteSpeaker(message.name ?? null)
     return { ok: true }
   }
-  if (message.type === 'start') return startRecording(message.tabId, message.language, message.source, message.mode)
+  if (message.type === 'captions') {
+    if (state.captionsOn !== message.on) {
+      state.captionsOn = message.on
+      broadcast()
+    }
+    return { ok: true }
+  }
+  if (message.type === 'cancel') return cancelRecording()
+  if (message.type === 'start') {
+    return startRecording(message.tabId, message.language, message.source, message.mode, message.skipInsights)
+  }
   if (message.type === 'pause') return setPaused(Boolean(message.paused))
   if (message.type === 'stop') return stopRecording()
   if (message.type === 'retryUpload') return retryUpload()

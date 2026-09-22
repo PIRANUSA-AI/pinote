@@ -101,6 +101,11 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
 
     // Phase 2: Background processing
     void (async () => {
+      if (job.skipInsights) {
+        await cacheJobStatus(jobId, { status: 'completed', progress: 100 })
+        console.log(`[${jobId}] Background: insights skipped by request`)
+        return
+      }
       try {
         // Step 1: Generate title, summary, action items FIRST (uses raw segments)
         console.log(`[${jobId}] Background: Generating summary...`)

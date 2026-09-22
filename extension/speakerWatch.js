@@ -1,6 +1,11 @@
-const POLL_MS = 400
-const MAX_NODES_PER_TILE = 80
+const POLL_MS = 350
+const CAPTION_GRACE_MS = 6000
+const MAX_NODES_PER_ROW = 60
 const SELF_LABELS = ['you', 'anda', 'kamu', 'saya']
+
+const CAPTION_ROW_SELECTORS = ['.nMcdL', '[class*="caption" i] [class*="row" i]']
+const CAPTION_NAME_SELECTORS = ['.NWpY1d', '[class*="speaker" i]', '[class*="author" i]']
+const CAPTION_TEXT_SELECTORS = ['.ygicle', '[class*="text" i]']
 
 const SPEAKING_SELECTORS = [
   '[data-is-speaking="true"]',
@@ -9,15 +14,13 @@ const SPEAKING_SELECTORS = [
   '[class*="speaker-active" i]',
 ]
 
-const MARKED_SELECTORS = [
-  '[class*="active-speaker" i]',
-  '[class*="speaker-active" i]',
-  '[class*="is-speaking" i]',
-  '[class*="isSpeaking"]',
-]
+const isMeet = location.hostname === 'meet.google.com'
 
 let timer = null
-let lastSent = null
+let lastName = null
+let lastCaptionsOn = null
+let watchingSince = 0
+let enableTried = false
 
 function cleanName(text) {
   const name = (text ?? '').replace(/\s+/g, ' ').trim().replace(/\s*\((you|anda|kamu)\)$/i, '')
@@ -27,96 +30,164 @@ function cleanName(text) {
   return name
 }
 
-function hasActiveAnimation(tile) {
-  if (!tile.querySelectorAll) return false
-  const nodes = tile.querySelectorAll('div, span, svg')
-  const limit = Math.min(nodes.length, MAX_NODES_PER_TILE)
+function firstMatch(root, selectors) {
+  for (const selector of selectors) {
+    const found = root.querySelector(selector)
+    if (found) return found
+  }
+  return null
+}
+
+function structuralName(row) {
+  const nodes = row.querySelectorAll('div, span')
+  const limit = Math.min(nodes.length, MAX_NODES_PER_ROW)
   for (let i = 0; i < limit; i++) {
     const node = nodes[i]
-    if (typeof node.getAnimations !== 'function') continue
-    if (node.getAnimations().length === 0) continue
-    const box = node.getBoundingClientRect()
-    if (box.width > 0 && box.width <= 48 && box.height > 0 && box.height <= 48) return true
-  }
-  return false
-}
-
-function isSpeaking(tile) {
-  for (const selector of SPEAKING_SELECTORS) {
-    if (tile.querySelector(selector)) return true
-  }
-  return hasActiveAnimation(tile)
-}
-
-function tileName(tile) {
-  const self = tile.querySelector('[data-self-name]')
-  if (self) {
-    const name = cleanName(self.textContent)
-    if (name) return name
-  }
-  const candidates = tile.querySelectorAll('.notranslate, [data-participant-name], [class*="name" i]')
-  for (const node of candidates) {
-    const name = cleanName(node.textContent)
-    if (name) return name
-  }
-  return cleanName(tile.getAttribute('aria-label'))
-}
-
-function meetSpeaker() {
-  const tiles = document.querySelectorAll('[data-participant-id]')
-  for (const tile of tiles) {
-    if (!isSpeaking(tile)) continue
-    const name = tileName(tile)
+    if (node.children.length > 0) continue
+    const text = (node.textContent ?? '').trim()
+    if (!text || text.length > 40) continue
+    if (/[.!?,;:]$/.test(text)) continue
+    const name = cleanName(text)
     if (name) return name
   }
   return null
 }
 
-function markedSpeaker() {
-  for (const selector of MARKED_SELECTORS) {
-    for (const node of document.querySelectorAll(selector)) {
-      const box = node.getBoundingClientRect()
-      if (box.width === 0 && box.height === 0) continue
-      const name = cleanName(node.getAttribute('aria-label')) ?? tileName(node) ?? cleanName(node.textContent)
-      if (name) return name
+function rowName(row) {
+  const labelled = firstMatch(row, CAPTION_NAME_SELECTORS)
+  if (labelled) {
+    const name = cleanName(labelled.textContent)
+    if (name) return name
+  }
+  return structuralName(row)
+}
+
+function rowHasText(row) {
+  const body = firstMatch(row, CAPTION_TEXT_SELECTORS)
+  const text = (body ?? row).textContent ?? ''
+  return text.trim().length > 0
+}
+
+function knownCaptionRows() {
+  for (const selector of CAPTION_ROW_SELECTORS) {
+    const rows = document.querySelectorAll(selector)
+    if (rows.length > 0) return Array.from(rows)
+  }
+  return []
+}
+
+function genericCaptionRows() {
+  const rows = []
+  for (const img of document.querySelectorAll('img')) {
+    const box = img.getBoundingClientRect()
+    if (box.width < 16 || box.width > 64) continue
+    if (Math.abs(box.width - box.height) > 8) continue
+    const row = img.parentElement?.parentElement
+    if (!row || rows.includes(row)) continue
+    if ((row.textContent ?? '').trim().length < 4) continue
+    rows.push(row)
+  }
+  return rows
+}
+
+function captionRows() {
+  const known = knownCaptionRows()
+  if (known.length > 0) return known
+  return genericCaptionRows()
+}
+
+function captionSpeaker() {
+  const rows = captionRows()
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i]
+    if (!rowHasText(row)) continue
+    const name = rowName(row)
+    if (name) return { name, rows: rows.length }
+  }
+  return { name: null, rows: rows.length }
+}
+
+function tileSpeaker() {
+  for (const tile of document.querySelectorAll('[data-participant-id]')) {
+    let speaking = false
+    for (const selector of SPEAKING_SELECTORS) {
+      if (tile.querySelector(selector)) {
+        speaking = true
+        break
+      }
     }
+    if (!speaking) continue
+    const self = tile.querySelector('[data-self-name]')
+    const name = cleanName(self?.textContent) ?? structuralName(tile) ?? cleanName(tile.getAttribute('aria-label'))
+    if (name) return name
   }
   return null
 }
 
-function detect() {
-  if (location.hostname === 'meet.google.com') return meetSpeaker() ?? markedSpeaker()
-  return markedSpeaker()
+function tryEnableCaptions() {
+  if (enableTried) return
+  enableTried = true
+  const buttons = document.querySelectorAll('button[aria-label], [role="button"][aria-label]')
+  for (const button of buttons) {
+    const label = button.getAttribute('aria-label') ?? ''
+    if (!/caption|subtitle|teks|takarir/i.test(label)) continue
+    if (!/turn on|aktifkan|nyalakan|hidupkan|enable/i.test(label)) continue
+    button.click()
+    return
+  }
+}
+
+function send(payload) {
+  chrome.runtime.sendMessage({ target: 'service', ...payload }).catch(() => {})
 }
 
 function tick() {
   let name = null
+  let captionsOn = null
+
   try {
-    name = detect()
+    if (isMeet) {
+      const caption = captionSpeaker()
+      captionsOn = caption.rows > 0
+      name = caption.name ?? tileSpeaker()
+      if (!captionsOn && Date.now() - watchingSince > CAPTION_GRACE_MS) tryEnableCaptions()
+    } else {
+      name = tileSpeaker()
+    }
   } catch {
     name = null
   }
-  if (name === lastSent) return
-  lastSent = name
-  chrome.runtime.sendMessage({ target: 'service', type: 'speaker', name }).catch(() => {})
+
+  if (captionsOn !== null && captionsOn !== lastCaptionsOn) {
+    lastCaptionsOn = captionsOn
+    send({ type: 'captions', on: captionsOn })
+  }
+
+  if (name === lastName) return
+  lastName = name
+  send({ type: 'speaker', name })
 }
 
 function setWatching(on) {
   if (on && !timer) {
-    lastSent = null
+    lastName = null
+    lastCaptionsOn = null
+    enableTried = false
+    watchingSince = Date.now()
     timer = setInterval(tick, POLL_MS)
     return
   }
   if (!on && timer) {
     clearInterval(timer)
     timer = null
-    lastSent = null
+    lastName = null
   }
 }
 
-chrome.storage.local.get('liveState').then((stored) => {
-  setWatching(stored?.liveState?.status === 'recording')
-}).catch(() => {})
+chrome.storage.local
+  .get('liveState')
+  .then((stored) => setWatching(stored?.liveState?.status === 'recording'))
+  .catch(() => {})
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local' || !changes.liveState) return

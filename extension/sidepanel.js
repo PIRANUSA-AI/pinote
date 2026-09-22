@@ -358,6 +358,9 @@ function renderControls(state) {
   }
   show(el('bgUpload'), Boolean(bg))
   show(el('pauseButton'), recording)
+  show(el('cancelButton'), recording)
+  show(el('insightRow'), !recording)
+  show(el('captionHint'), recording && state.source === 'meet' && state.captionsOn === false)
   el('sheet').className = recording ? 'sheet compact' : 'sheet'
 
   if (recording) {
@@ -489,6 +492,16 @@ el('searchInput').addEventListener('keydown', (event) => {
   }
 })
 
+el('cancelButton').addEventListener('click', async () => {
+  if (!latestState || (latestState.status !== 'recording' && latestState.status !== 'starting')) return
+  const sure = window.confirm('Batalkan rekaman ini? Audio dan transkrip yang sudah jalan akan dibuang dan tidak dikirim ke Rekapin.')
+  if (!sure) return
+  el('cancelButton').disabled = true
+  await chrome.runtime.sendMessage({ target: 'service', type: 'cancel' })
+  el('cancelButton').disabled = false
+  await pullState()
+})
+
 el('pauseButton').addEventListener('click', async () => {
   if (!latestState || latestState.status !== 'recording') return
   el('pauseButton').disabled = true
@@ -589,6 +602,7 @@ el('recordButton').addEventListener('click', async () => {
     language,
     source: sourceFor(activeTab.url),
     mode: 'picker',
+    skipInsights: !el('autoInsights').checked,
   })
   el('recordButton').disabled = false
   await pullState()
@@ -606,6 +620,15 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
   }
 })
 
+el('autoInsights').addEventListener('change', () => {
+  chrome.storage.local.set({ autoInsights: el('autoInsights').checked }).catch(() => {})
+})
+
+async function restorePreferences() {
+  const stored = await chrome.storage.local.get('autoInsights').catch(() => null)
+  el('autoInsights').checked = stored?.autoInsights !== false
+}
+
 async function restoreLanguage() {
   const stored = await chrome.storage.local.get('language').catch(() => null)
   if (!stored?.language) return
@@ -618,6 +641,7 @@ async function restoreLanguage() {
 async function init() {
   config = await readConfig()
   await restoreLanguage()
+  await restorePreferences()
   await loadTab()
   void checkForUpdate()
   await syncAuth()

@@ -65,6 +65,7 @@ export const jobs = pgTable(
     errorMessage: text('error_message'),
     source: text('source').notNull().default('upload'),
     isPrivate: boolean('is_private').notNull().default(false),
+    skipInsights: boolean('skip_insights').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     uploadedAt: timestamp('uploaded_at', { withTimezone: true }),
     queuedAt: timestamp('queued_at', { withTimezone: true }),

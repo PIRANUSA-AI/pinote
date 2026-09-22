@@ -171,7 +171,7 @@ async function captureTab(streamId, mediaSource) {
   return stream
 }
 
-async function start({ streamId, mediaSource, language, apiBase, source }) {
+async function start({ streamId, mediaSource, language, apiBase, source, skipInsights }) {
   if (capture) throw new Error('Perekaman sudah berjalan')
 
   const stream = await captureTab(streamId, mediaSource ?? 'tab')
@@ -231,6 +231,7 @@ async function start({ streamId, mediaSource, language, apiBase, source }) {
     language,
     apiBase,
     source: source ?? 'upload',
+    skipInsights: Boolean(skipInsights),
     paused: false,
     stopping: false,
     liveRetry: 0,
@@ -306,6 +307,7 @@ async function createJob(job) {
         durationSec: job.durationSec,
         language: job.language,
         source: job.source,
+        skipInsights: job.skipInsights,
       }),
     })
   } catch {
@@ -423,12 +425,34 @@ async function stop() {
     durationSec: Math.max(1, Math.round((Date.now() - current.startedAt) / 1000)),
     language: current.language,
     source: current.source,
+    skipInsights: current.skipInsights,
     jobId: null,
     uploadUrl: null,
   })
 
   runUpload()
   return { ok: true, accepted: true }
+}
+
+async function cancelCapture() {
+  if (!capture) return { ok: false, error: 'Tidak ada perekaman aktif' }
+  const current = capture
+  current.stopping = true
+  clearTimeout(current.liveTimer)
+  clearInterval(current.energyTimer)
+  capture = null
+
+  try {
+    await stopRecorder(current.recorder)
+  } finally {
+    current.stream.getTracks().forEach((track) => track.stop())
+    current.micStream?.getTracks().forEach((track) => track.stop())
+    current.playbackContext.close().catch(() => {})
+    current.asrContext.close().catch(() => {})
+    setTimeout(() => current.socket?.close(), 200)
+  }
+
+  return { ok: true }
 }
 
 function setPaused(paused) {
@@ -467,6 +491,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'startCapture') {
     start(message)
       .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }))
+    return true
+  }
+
+  if (message.type === 'cancelCapture') {
+    cancelCapture()
+      .then((result) => sendResponse(result))
       .catch((err) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }))
     return true
   }

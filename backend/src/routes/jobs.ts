@@ -21,6 +21,7 @@ const createSchema = z.object({
   durationSec: z.number().int().positive(),
   language: z.enum(['id', 'en', 'auto']).optional(),
   source: z.enum(['upload', 'meet', 'zoom', 'whatsapp']).optional(),
+  skipInsights: z.boolean().optional(),
 })
 
 export const jobsRouter = new Hono<AppEnv>()
@@ -67,6 +68,7 @@ jobsRouter.post('/', async (c) => {
       status: 'pending' satisfies JobStatus,
       source: parsed.data.source ?? 'upload',
       isPrivate: parsed.data.source === 'whatsapp',
+      skipInsights: parsed.data.skipInsights ?? false,
     })
     .returning()
 

@@ -1,0 +1,1 @@
+ALTER TABLE "jobs" ADD COLUMN "skip_insights" boolean DEFAULT false NOT NULL;

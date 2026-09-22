@@ -12,6 +12,9 @@ Tulis rilis terbaru paling atas. Setiap rilis diawali baris `## versi · tanggal
 * Transkrip final setelah rapat pindah ke Deepgram dengan pemisahan pembicara
 * Kalimat pendek dari pembicara yang sama digabung jadi satu baris, tidak lagi pecah tiap beberapa kata
 * Pengiriman rekaman berjalan di latar belakang, jadi kamu bisa langsung merekam rapat berikutnya tanpa menunggu
+* Nama pembicara dibaca dari teks otomatis Google Meet, jadi baris transkrip memakai nama asli peserta
+* Tombol Batalkan saat merekam, untuk membuang rekaman tanpa mengirimnya
+* Pilihan mematikan ringkasan dan tugas otomatis, kalau kamu cuma mau transkripnya saja
 
 ## 0.8.0 · 22 September 2026
 * Halaman unduh resmi dengan panduan pemasangan langkah demi langkah untuk Chrome dan Edge

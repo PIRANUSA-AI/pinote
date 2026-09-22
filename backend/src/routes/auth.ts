@@ -19,6 +19,13 @@ import { actionItems, jobs, users } from '../db/schema.js'
 import { cacheUserStats, getCachedUserStats, cacheIncrWithTtl, cacheDelete, cacheGet } from '../services/cache.js'
 import { nanoid } from 'nanoid'
 
+function crossSiteReady(forwardedProto: string | undefined, host: string | undefined): boolean {
+  if (forwardedProto === 'https') return true
+  if (process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'staging') return true
+  const name = host ?? ''
+  return name.startsWith('localhost') || name.startsWith('127.0.0.1')
+}
+
 const TRANSCRIPTION_COST_PER_MIN = Number(process.env.TRANSCRIPTION_COST_PER_MIN ?? 0.0021)
 const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX ?? 10)
 const LOGIN_RATE_LIMIT_WINDOW_SEC = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_SEC ?? 15 * 60)
@@ -58,8 +65,7 @@ authRouter.post('/google', async (c) => {
     }
 
     const { token } = await createSession(user.id)
-    const isHttps = c.req.header('x-forwarded-proto') === 'https' || process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'staging'
-    c.header('Set-Cookie', buildSessionCookie(token, { secure: isHttps }))
+    c.header('Set-Cookie', buildSessionCookie(token, { secure: crossSiteReady(c.req.header('x-forwarded-proto'), c.req.header('host')) }))
 
     return c.json({
       id: user.id,
@@ -77,8 +83,7 @@ authRouter.post('/google', async (c) => {
 authRouter.post('/logout', async (c) => {
   const token = getCookie(c, 'session')
   if (token) await deleteSession(token)
-  const isHttps = c.req.header('x-forwarded-proto') === 'https' || process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'staging'
-  c.header('Set-Cookie', clearSessionCookie({ secure: isHttps }))
+  c.header('Set-Cookie', clearSessionCookie({ secure: crossSiteReady(c.req.header('x-forwarded-proto'), c.req.header('host')) }))
   return c.json({ ok: true })
 })
 

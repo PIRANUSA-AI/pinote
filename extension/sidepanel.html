@@ -51,13 +51,23 @@
 
         <div id="bgUpload" class="bgUpload" hidden></div>
 
+        <div id="captionHint" class="bgUpload warn" hidden>
+          Nyalakan teks otomatis (CC) di Google Meet supaya nama pembicara terbaca. Tanpa itu baris orang lain ditulis Peserta.
+        </div>
+
         <div id="languageGroup" class="segmented" role="group" aria-label="Bahasa">
           <button class="segment" type="button" data-value="auto">Auto</button>
           <button class="segment active" type="button" data-value="id">Indonesia</button>
           <button class="segment" type="button" data-value="en">English</button>
         </div>
 
+        <label id="insightRow" class="insightRow">
+          <input id="autoInsights" type="checkbox" checked>
+          <span>Buat ringkasan dan tugas otomatis</span>
+        </label>
+
         <div class="actionRow">
+          <button id="cancelButton" class="secondaryAction danger" type="button" hidden>Batalkan</button>
           <button id="pauseButton" class="secondaryAction" type="button" hidden>Jeda</button>
           <button id="recordButton" class="primaryAction grow" type="button">
             <span id="recordDot" class="recordDot" hidden></span>

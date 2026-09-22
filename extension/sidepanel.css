@@ -580,6 +580,25 @@ mark {
   box-shadow: 0 8px 22px rgba(30, 27, 75, 0.32);
 }
 
+.insightRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--inkMuted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.insightRow input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--brand, #4f46e5);
+}
+
+.secondaryAction.danger {
+  color: var(--danger);
+}
+
 .bgUpload {
   padding: 7px 11px;
   border-radius: 10px;
