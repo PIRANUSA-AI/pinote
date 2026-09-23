@@ -2,6 +2,12 @@
 
 Tulis rilis terbaru paling atas. Setiap rilis diawali baris `## versi · tanggal`, lalu setiap perubahan diawali `* `.
 
+## 0.10.1 · 23 September 2026
+* Google Meet tidak butuh caption lagi. Suara tiap peserta ditranskrip terpisah dan namanya diambil langsung dari akun Meet masing masing
+* Berapa pun jumlah pesertanya, setiap kalimat diberi nama pemilik suaranya, termasuk saat dua orang bicara bersamaan
+* Suaramu sendiri tetap dari mikrofon dengan nama akunmu
+* Kalimat terakhir sebelum kamu menekan berhenti ikut tersimpan
+
 ## 0.9.0 · 22 September 2026
 * Tombol Mulai Rekapin kini selalu jalan. Chrome menampilkan dialog pilih tab sekali, lalu perekaman dimulai
 * Jalur cepat tanpa dialog: klik kanan di halaman rapat lalu pilih Mulai Rekapin, atau tekan Ctrl+Shift+U

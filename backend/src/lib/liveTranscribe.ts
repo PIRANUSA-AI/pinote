@@ -8,7 +8,8 @@ import { LIVE_SAMPLE_RATE, OpenAiRealtimeSession } from '../services/openaiRealt
 const LIVE_PATH = '/live'
 const BYTES_PER_SECOND = LIVE_SAMPLE_RATE * 2
 const MAX_SESSION_BYTES = BYTES_PER_SECOND * 60 * 60 * 4
-const MAX_SESSIONS_PER_USER = Number(process.env.LIVE_MAX_SESSIONS_PER_USER ?? 2)
+const MAX_SESSIONS_PER_USER = Number(process.env.LIVE_MAX_SESSIONS_PER_USER ?? 10)
+const MAX_TAG_LENGTH = 600
 
 const activeSessions = new Map<string, number>()
 
@@ -70,8 +71,8 @@ function handleConnection(ws: WebSocket, user: User): void {
     if (session) return
     session = new OpenAiRealtimeSession(language, {
       onReady: () => send({ type: 'ready' }),
-      onPartial: (text) => send({ type: 'partial', text }),
-      onFinal: (text) => send({ type: 'final', text }),
+      onPartial: (text, tag) => send({ type: 'partial', text, tag }),
+      onFinal: (text, tag) => send({ type: 'final', text, tag }),
       onError: (message) => send({ type: 'error', message }),
       onClose: () => send({ type: 'upstreamClosed' }),
     }, sampleRate)
@@ -92,7 +93,7 @@ function handleConnection(ws: WebSocket, user: User): void {
       return
     }
 
-    let message: { type?: string; language?: string; sampleRate?: number }
+    let message: { type?: string; language?: string; sampleRate?: number; tag?: unknown }
     try {
       message = JSON.parse(data.toString())
     } catch {
@@ -111,6 +112,12 @@ function handleConnection(ws: WebSocket, user: User): void {
 
     if (message.type === 'flush') {
       session?.flush()
+      return
+    }
+
+    if (message.type === 'owner') {
+      const tag = typeof message.tag === 'string' && message.tag.length > 0 && message.tag.length <= MAX_TAG_LENGTH ? message.tag : null
+      session?.setTag(tag)
       return
     }
 

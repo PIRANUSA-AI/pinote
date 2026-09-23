@@ -6,6 +6,10 @@ const ENERGY_POLL_MS = 100
 const SPEECH_FLOOR = 0.012
 const SELF_DOMINANCE = 1.4
 const SILENCE_FLUSH_MS = 700
+const LANE_SAMPLE_RATE = 24000
+const MAX_LANE_SOCKETS = 8
+const LANE_QUEUE_LIMIT = 300
+const DRAIN_WAIT_MS = 2500
 
 let capture = null
 let uploadQueue = []
@@ -132,6 +136,123 @@ function connectLive() {
   })
 }
 
+function base64ToBuffer(value) {
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes.buffer
+}
+
+function parseTag(tag) {
+  if (typeof tag !== 'string' || !tag) return { participantId: null, startedAt: null }
+  const cut = tag.lastIndexOf('|')
+  if (cut <= 0) return { participantId: tag, startedAt: null }
+  const startedAt = Number(tag.slice(cut + 1))
+  return { participantId: tag.slice(0, cut), startedAt: Number.isFinite(startedAt) ? startedAt : null }
+}
+
+function laneSend(entry, payload) {
+  if (entry.socket.readyState === WebSocket.OPEN) entry.socket.send(payload)
+  else if (entry.queue.length < LANE_QUEUE_LIMIT) entry.queue.push(payload)
+}
+
+function laneEntry(current, lane) {
+  const existing = current.lanes.get(lane)
+  if (existing && existing.socket.readyState <= WebSocket.OPEN) return existing
+  if (!existing && current.lanes.size >= MAX_LANE_SOCKETS) return null
+
+  const socket = new WebSocket(websocketUrl(current.apiBase))
+  socket.binaryType = 'arraybuffer'
+  const entry = { socket, queue: [], tag: null }
+  current.lanes.set(lane, entry)
+
+  socket.addEventListener('open', () => {
+    socket.send(JSON.stringify({ type: 'start', language: current.language, sampleRate: LANE_SAMPLE_RATE }))
+    for (const item of entry.queue) socket.send(item)
+    entry.queue = []
+  })
+
+  socket.addEventListener('message', (event) => {
+    let message
+    try {
+      message = JSON.parse(event.data)
+    } catch {
+      return
+    }
+    const { participantId, startedAt } = parseTag(message.tag)
+    if (message.type === 'partial') {
+      report({ type: 'lanePartial', lane, participantId, text: message.text })
+    } else if (message.type === 'final') {
+      report({ type: 'laneFinal', lane, participantId: participantId ?? `lane:${lane}`, startedAt, text: message.text })
+    } else if (message.type === 'error') {
+      report({ type: 'liveError', message: message.message })
+    }
+  })
+
+  socket.addEventListener('close', () => {
+    if (current.lanes.get(lane) === entry) current.lanes.delete(lane)
+  })
+
+  return entry
+}
+
+function handleLaneMessage(message, port) {
+  const current = capture
+  if (!current || current.stopping || current.source !== 'meet') return
+  if (port.sender?.tab?.id !== current.tabId || port.sender?.frameId !== 0) return
+  if (!Number.isSafeInteger(message?.lane)) return
+
+  if (message.type === 'laneFlush') {
+    const entry = current.lanes.get(message.lane)
+    if (entry) laneSend(entry, JSON.stringify({ type: 'flush' }))
+    return
+  }
+
+  if (message.type !== 'lane' || current.paused || typeof message.pcm !== 'string') return
+  const entry = laneEntry(current, message.lane)
+  if (!entry) return
+
+  const owner = typeof message.owner === 'string' && message.owner ? message.owner : `lane:${message.lane}`
+  const tag = `${owner}|${Number.isFinite(message.startedAt) ? message.startedAt : Date.now()}`
+  if (entry.tag !== tag) {
+    entry.tag = tag
+    laneSend(entry, JSON.stringify({ type: 'owner', tag }))
+  }
+
+  let pcm
+  try {
+    pcm = base64ToBuffer(message.pcm)
+  } catch {
+    return
+  }
+  laneSend(entry, pcm)
+}
+
+async function drainLanes() {
+  const current = capture
+  if (!current) return { ok: true }
+  for (const entry of current.lanes.values()) laneSend(entry, JSON.stringify({ type: 'flush' }))
+  if (current.socket && current.socket.readyState === WebSocket.OPEN) {
+    current.socket.send(JSON.stringify({ type: 'flush' }))
+  }
+  await sleep(DRAIN_WAIT_MS)
+  return { ok: true }
+}
+
+function closeLanes(current) {
+  for (const entry of current.lanes.values()) {
+    try {
+      entry.socket.close()
+    } catch {}
+  }
+  current.lanes.clear()
+}
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'rekapinMeetAudio') return
+  port.onMessage.addListener((message) => handleLaneMessage(message, port))
+})
+
 function scheduleLiveReconnect(current) {
   if (current.liveRetry >= MAX_RETRIES) {
     report({ type: 'liveStatus', status: 'lost' })
@@ -172,7 +293,7 @@ async function captureTab(streamId, mediaSource) {
   return stream
 }
 
-async function start({ streamId, mediaSource, language, apiBase, source, skipInsights }) {
+async function start({ streamId, mediaSource, language, apiBase, source, tabId, skipInsights }) {
   if (capture) throw new Error('Perekaman sudah berjalan')
 
   const stream = await captureTab(streamId, mediaSource ?? 'tab')
@@ -202,7 +323,7 @@ async function start({ streamId, mediaSource, language, apiBase, source, skipIns
   await asrContext.audioWorklet.addModule(chrome.runtime.getURL('pcmWorklet.js'))
   const pcmNode = new AudioWorkletNode(asrContext, 'pcmProcessor')
   const mixer = asrContext.createGain()
-  asrContext.createMediaStreamSource(stream).connect(mixer)
+  if (source !== 'meet') asrContext.createMediaStreamSource(stream).connect(mixer)
   if (micStream) asrContext.createMediaStreamSource(micStream).connect(mixer)
   const mute = asrContext.createGain()
   mute.gain.value = 0
@@ -236,6 +357,8 @@ async function start({ streamId, mediaSource, language, apiBase, source, skipIns
     language,
     apiBase,
     source: source ?? 'upload',
+    tabId: Number.isSafeInteger(tabId) ? tabId : null,
+    lanes: new Map(),
     skipInsights: Boolean(skipInsights),
     paused: false,
     pausedAt: null,
@@ -255,7 +378,7 @@ async function start({ streamId, mediaSource, language, apiBase, source, skipIns
     const current = capture
     if (!current || current.paused || current.stopping) return
     const mic = current.micMeter ? meterLevel(current.micMeter) : 0
-    const tab = current.tabMeter ? meterLevel(current.tabMeter) : 0
+    const tab = current.tabMeter && current.source !== 'meet' ? meterLevel(current.tabMeter) : 0
 
     if (mic < SPEECH_FLOOR && tab < SPEECH_FLOOR) {
       if (!current.awaitingFlush) return
@@ -279,9 +402,7 @@ async function start({ streamId, mediaSource, language, apiBase, source, skipIns
     if (current.socket && current.socket.readyState === WebSocket.OPEN) current.socket.send(event.data)
   }
 
-  // Meet's native transcript already carries participant IDs. Sending the mixed
-  // recording to live ASR would lose that identity and create duplicate lines.
-  if (capture.source !== 'meet') connectLive()
+  connectLive()
   report({ type: 'captureStarted' })
 }
 
@@ -425,6 +546,7 @@ async function stop(attendance, speakerTimeline, nativeTranscript) {
   current.stopping = true
   clearTimeout(current.liveTimer)
   clearInterval(current.energyTimer)
+  closeLanes(current)
   capture = null
 
   try {
@@ -478,6 +600,7 @@ async function cancelCapture() {
   current.stopping = true
   clearTimeout(current.liveTimer)
   clearInterval(current.energyTimer)
+  closeLanes(current)
   capture = null
 
   try {
@@ -533,6 +656,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     start(message)
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }))
+    return true
+  }
+
+  if (message.type === 'drainLanes') {
+    drainLanes()
+      .then((result) => sendResponse(result))
+      .catch(() => sendResponse({ ok: true }))
     return true
   }
 

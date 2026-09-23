@@ -1,5 +1,3 @@
-// Private Meet wire format. See docs/MEET-SPEAKER-IDENTITY.md for provenance
-// and compatibility limits. Unknown/truncated packets fail closed.
 (() => {
   const decoder = new TextDecoder('utf-8', { fatal: true })
   const LIMIT = 2 * 1024 * 1024
@@ -36,41 +34,52 @@
     return result
   }
   const bytesAt = (map, id) => map.get(id)?.find((f) => f.wire === 2)?.value
-  const str = (map, id) => { const b = bytesAt(map, id); return b ? decoder.decode(b) : '' }
+  const str = (map, id) => {
+    const b = bytesAt(map, id)
+    if (!b) return ''
+    try { return decoder.decode(b) } catch { return '' }
+  }
   const num = (map, id) => map.get(id)?.find((f) => f.wire === 0)?.value
   function nested(map, ...path) {
     for (const id of path) {
       const b = bytesAt(map, id)
       if (!b) return new Map()
-      map = fields(b)
+      try { map = fields(b) } catch { return new Map() }
     }
     return map
   }
+  function repeated(map, id, read) {
+    const list = []
+    for (const { wire, value } of map.get(id) ?? []) {
+      if (wire !== 2) continue
+      let entry
+      try { entry = fields(value) } catch { continue }
+      const item = read(entry)
+      if (item) list.push(item)
+    }
+    return list
+  }
   function users(map) {
-    return (map.get(2) ?? []).filter((f) => f.wire === 2).map(({ value }) => {
-      const u = fields(value)
-      return { id: str(u, 1), name: str(u, 2) || str(u, 29), parentId: str(u, 21), self: Boolean(str(u, 7)), status: num(u, 4) }
-    }).filter((u) => u.id && u.id.length <= 512 && u.name && u.name.length <= 120)
+    return repeated(map, 2, (u) => {
+      const user = { id: str(u, 1), name: str(u, 2) || str(u, 29), parentId: str(u, 21), self: Boolean(str(u, 7)), status: num(u, 4) }
+      return user.id && user.id.length <= 512 && user.name && user.name.length <= 120 ? user : null
+    })
   }
   function roster(bytes, sync = false) {
     const root = fields(bytes)
     return users(sync ? nested(root, 2, 2) : nested(root, 1, 2, 13, 1))
   }
-  function caption(bytes, v2 = false) {
-    const event = nested(fields(bytes), 1)
-    const body = v2 ? nested(event, 3) : event
-    const id = v2 ? num(event, 1) : num(event, 2)
-    const version = (v2 ? num(event, 2) : num(event, 3)) ?? '0'
-    const deviceId = str(body, v2 ? 6 : 1)
-    const text = str(body, v2 ? 3 : 6)
-    if (!id || !deviceId || deviceId.length > 512 || text.length > 10000) throw new Error('Unsupported caption')
-    return { id, version, deviceId, text, final: num(body, v2 ? 2 : 4) === '1' }
+  function devices(bytes) {
+    const root = fields(bytes)
+    return repeated(nested(root, 1, 2, 3), 2, (d) => {
+      const streamId = str(d, 4)
+      const deviceId = str(d, 6)
+      if (num(d, 2) !== '1' || !streamId || !deviceId || streamId.length > 64 || deviceId.length > 512) return null
+      return { streamId, deviceId, disabled: num(nested(d, 10), 1) === '1' }
+    })
   }
-  async function packet(data, compressed = false) {
-    const blob = data instanceof Blob ? data : new Blob([data])
-    if (blob.size > LIMIT) throw new Error('Packet too large')
-    if (!compressed) return new Uint8Array(await blob.arrayBuffer())
-    const reader = blob.stream().pipeThrough(new DecompressionStream('deflate')).getReader()
+  async function expand(blob, format) {
+    const reader = blob.stream().pipeThrough(new DecompressionStream(format)).getReader()
     const chunks = []; let size = 0
     try {
       while (true) {
@@ -85,5 +94,16 @@
     for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length }
     return result
   }
-  globalThis.RekapinMeetProtocol = Object.freeze({ roster, caption, packet })
+  async function packet(data, compressed = false) {
+    const blob = data instanceof Blob ? data : new Blob([data])
+    if (blob.size > LIMIT) throw new Error('Packet too large')
+    if (!compressed) return new Uint8Array(await blob.arrayBuffer())
+    for (const format of ['deflate', 'deflate-raw', 'gzip']) {
+      try { return await expand(blob, format) } catch (err) {
+        if (err?.message === 'Expanded packet too large') throw err
+      }
+    }
+    return new Uint8Array(await blob.arrayBuffer())
+  }
+  globalThis.RekapinMeetProtocol = Object.freeze({ roster, devices, packet })
 })()

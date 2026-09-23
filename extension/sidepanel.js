@@ -288,7 +288,6 @@ function renderTranscript(state) {
     partialNode = null
   }
 
-  // Native caption revisions and delayed roster updates may amend any row.
   for (let i = 0; i < Math.min(renderedCount, entries.length); i++) {
     const rendered = lines.children[i]
     const entry = entries[i]

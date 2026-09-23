@@ -30,6 +30,8 @@ const state = {
   utteranceStart: null,
   sessionId: null,
   meetParticipants: {},
+  meetStreams: {},
+  nativeSequence: 0,
   nativeError: null,
 }
 
@@ -184,6 +186,8 @@ function reset() {
   roster = []
   state.sessionId = null
   state.meetParticipants = {}
+  state.meetStreams = {}
+  state.nativeSequence = 0
   state.nativeError = null
   state.watcherOn = false
   state.status = 'idle'
@@ -257,6 +261,7 @@ async function startRecording(tabId, language, source, mode, skipInsights) {
       language,
       apiBase,
       source: state.source,
+      tabId,
       skipInsights: Boolean(skipInsights),
     })
 
@@ -365,6 +370,16 @@ async function stopRecording() {
   if (state.status !== 'recording') {
     return { ok: false, error: 'Tidak ada sesi aktif' }
   }
+  if (state.live?.status === 'draining') {
+    return { ok: false, error: 'Sedang menyelesaikan kalimat terakhir' }
+  }
+
+  if (state.source === 'meet') {
+    state.live = { status: 'draining', attempt: 0, max: 0, retryAt: null }
+    broadcast()
+    await chrome.tabs.sendMessage(state.tabId, { target: 'meetBridge', type: 'stop' }).catch(() => {})
+    await chrome.runtime.sendMessage({ target: 'offscreen', type: 'drainLanes' }).catch(() => null)
+  }
 
   state.status = 'uploading'
   state.live = null
@@ -418,10 +433,26 @@ async function discardUpload() {
 }
 
 function handleOffscreenEvent(message) {
-  if (state.source === 'meet' && ['livePartial', 'liveFinal'].includes(message.type)) return
-  if (message.type === 'livePartial') {
+  if (message.type === 'lanePartial') {
+    if (state.source !== 'meet' || typeof message.text !== 'string') return
+    state.partial = message.text.slice(0, 2000)
+  } else if (message.type === 'laneFinal') {
+    if (state.source !== 'meet' || state.status !== 'recording') return
+    clearLiveError()
+    if (!applyMeetEvent(state, { event: 'laneFinal', participantId: message.participantId, text: message.text, startedAt: message.startedAt })) return
+    if (state.error && state.error === state.nativeError) {
+      state.error = null
+      state.nativeError = null
+    }
+  } else if (message.type === 'livePartial') {
     if (!state.partial) state.utteranceStart = Date.now()
     state.partial = message.text
+  } else if (message.type === 'liveFinal' && state.source === 'meet') {
+    clearLiveError()
+    const startedAt = state.utteranceStart ?? Date.now() - 4000
+    state.utteranceStart = null
+    if (state.status !== 'recording') return
+    if (!applyMeetEvent(state, { event: 'laneFinal', participantId: 'local', name: selfName, text: message.text, startedAt })) return
   } else if (message.type === 'liveFinal') {
     clearLiveError()
     const endedAt = Date.now()
@@ -514,8 +545,7 @@ async function handleServiceMessage(message, sender) {
       state.error = typeof message.message === 'string' ? message.message.slice(0, 300) : 'Data Meet belum tersedia.'
       state.nativeError = state.error
       broadcast()
-    } else if (applyMeetEvent(state, message)) {
-      if (message.event === 'caption' && state.error === state.nativeError) { state.error = null; state.nativeError = null }
+    } else if (['roster', 'devices'].includes(message.event) && applyMeetEvent(state, message)) {
       broadcast()
     }
     return { ok: true }

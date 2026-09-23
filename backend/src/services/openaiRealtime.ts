@@ -9,8 +9,8 @@ export const LIVE_SAMPLE_RATE = Number(process.env.OPENAI_REALTIME_SAMPLE_RATE ?
 
 export interface LiveTranscriptionHandlers {
   onReady: () => void
-  onPartial: (text: string) => void
-  onFinal: (text: string) => void
+  onPartial: (text: string, tag: string | null) => void
+  onFinal: (text: string, tag: string | null) => void
   onError: (message: string) => void
   onClose: () => void
 }
@@ -43,6 +43,8 @@ export class OpenAiRealtimeSession {
   private partials = new Map<string, string>()
   private bytesSinceCommit = 0
   private turnTimer: NodeJS.Timeout | null = null
+  private currentTag: string | null = null
+  private tagQueue: Array<string | null> = []
 
   constructor(
     private readonly language: 'id' | 'en' | 'auto',
@@ -138,18 +140,19 @@ export class OpenAiRealtimeSession {
         const key = event.item_id ?? 'current'
         const text = `${this.partials.get(key) ?? ''}${event.delta ?? ''}`
         this.partials.set(key, text)
-        if (text.trim() && !this.isHallucination(text)) this.handlers.onPartial(text.trim())
+        if (text.trim() && !this.isHallucination(text)) this.handlers.onPartial(text.trim(), this.currentTag)
         return
       }
       case 'conversation.item.input_audio_transcription.completed': {
         this.partials.delete(event.item_id ?? 'current')
+        const tag = this.tagQueue.length > 0 ? (this.tagQueue.shift() ?? null) : this.currentTag
         const text = (event.transcript ?? '').trim()
         if (!text) return
         if (this.isHallucination(text)) {
           console.warn(`Live transcript dibuang karena bukan bahasa ${this.language}: ${text.slice(0, 60)}`)
           return
         }
-        this.handlers.onFinal(text)
+        this.handlers.onFinal(text, tag)
         return
       }
       case 'error':
@@ -177,11 +180,19 @@ export class OpenAiRealtimeSession {
     if (this.closed || !this.ready) return
     if (this.bytesSinceCommit < MIN_COMMIT_BYTES) return
     this.bytesSinceCommit = 0
+    this.tagQueue.push(this.currentTag)
+    if (this.tagQueue.length > 200) this.tagQueue.shift()
     this.rawSend(JSON.stringify({ type: 'input_audio_buffer.commit' }))
   }
 
   flush(): void {
     this.commitTurn()
+  }
+
+  setTag(tag: string | null): void {
+    if (tag === this.currentTag) return
+    this.commitTurn()
+    this.currentTag = tag
   }
 
   private rawSend(payload: string): void {
@@ -215,6 +226,7 @@ export class OpenAiRealtimeSession {
     this.closed = true
     if (this.turnTimer) clearInterval(this.turnTimer)
     this.turnTimer = null
+    this.tagQueue = []
     this.pending = []
     this.partials.clear()
     if (this.socket && this.socket.readyState <= WebSocket.OPEN) this.socket.close()
