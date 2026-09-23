@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Rekapin Meeting Recorder",
-  "version": "0.10.3",
+  "version": "0.15.1",
   "description": "Transkrip langsung rapat Google Meet, Zoom, dan panggilan WhatsApp Web, lalu kirim ke Rekapin.",
   "minimum_chrome_version": "116",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0tdmwdMhMs68CrarcFvv0DNoeL56z7b6mPI/x3usZckqi0yx1i4OlTVz2xbXhvZYflbV45vwCmFmG6DA4cAVBFMaAwFrxG35DPlM9Yq4LKsJB7W6zJAnSxZyAlVwefr8DHqK1trvcIDZXP/mir/cAzMSdEyxSTkX/WibwrGcmF80zwQPrIxVbR5LBeB/jokQ2wYOvy835axxpXt2ItqgGHp17fv8IsBYKjhTg/FqboKPTLTMvmtckfY+QTCI0xu+o9apmXgZ2GmZh4Kagnm1deGMyGYv13oL+8LjvPeocjdtLKTUsfg07hFZbsPCnpQW0TLaQJWbB2aTSB8dtZYclwIDAQAB",
@@ -39,7 +39,7 @@
   "content_scripts": [
     {
       "matches": ["https://meet.google.com/*"],
-      "js": ["meetProtocol.js", "meetPage.js"],
+      "js": ["meetProtocol.js", "languageDetect.js", "meetPage.js"],
       "world": "MAIN",
       "run_at": "document_start"
     },

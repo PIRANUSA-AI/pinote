@@ -51,17 +51,27 @@
 
         <div id="bgUpload" class="bgUpload" hidden></div>
 
-        <div id="captionHint" class="bgUpload warn" hidden>
-          Suara tiap peserta Google Meet ditranskrip terpisah, jadi nama pembicara diambil langsung dari akun Meet masing masing.
-        </div>
-
         <div id="watcherHint" class="bgUpload warn" hidden>
           Tab rapat belum terpantau. Refresh tab Google Meet sekali supaya nama peserta terbaca.
         </div>
 
         <div id="attendanceRow" class="startHint" hidden></div>
 
-        <div id="diagRow" class="startHint" hidden></div>
+        <div id="languageRow" class="startHint" hidden></div>
+
+        <div id="languageSuggest" class="suggestBar" role="status" hidden>
+          <svg class="suggestIcon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 5h12M9 3v2m1.5 0C10 10 7 14 3 16m4-6c1.5 3 4 5 7 6"></path>
+            <path d="M13 21l4.5-10L22 21m-7.5-3h6"></path>
+          </svg>
+          <span id="languageSuggestText" class="suggestText"></span>
+          <button id="languageSuggestApply" class="suggestApply" type="button"></button>
+          <button id="languageSuggestDismiss" class="suggestDismiss" type="button" title="Abaikan" aria-label="Abaikan saran bahasa">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18"></path>
+            </svg>
+          </button>
+        </div>
 
         <div id="languageGroup" class="segmented" role="group" aria-label="Bahasa">
           <button class="segment" type="button" data-value="auto">Auto</button>
@@ -150,6 +160,17 @@
         <button id="jumpLatest" class="jumpLatest" type="button" hidden>Ke terbaru</button>
       </div>
     </main>
+
+    <div id="cancelModal" class="modalBackdrop" hidden>
+      <div class="modalCard" role="alertdialog" aria-modal="true" aria-labelledby="cancelTitle" aria-describedby="cancelBody">
+        <h2 id="cancelTitle" class="modalTitle">Batalkan rekaman ini?</h2>
+        <p id="cancelBody" class="modalBody">Audio dan transkrip yang sudah berjalan akan dibuang dan tidak dikirim ke Rekapin. Tindakan ini tidak bisa dibatalkan.</p>
+        <div class="modalActions">
+          <button id="cancelKeep" class="secondaryAction grow" type="button">Lanjutkan rekaman</button>
+          <button id="cancelConfirm" class="primaryAction grow dangerSolid" type="button">Ya, batalkan</button>
+        </div>
+      </div>
+    </div>
 
     <script type="module" src="sidepanel.js"></script>
   </body>

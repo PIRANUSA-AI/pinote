@@ -10,7 +10,7 @@
   let startTimer = null
   let alive = true
 
-  const control = (type, id = session) => window.postMessage({ bridge: 'rekapin-meet-control-v1', type, session: id }, location.origin)
+  const control = (type, id = session, language) => window.postMessage({ bridge: 'rekapin-meet-control-v1', type, session: id, language }, location.origin)
 
   function contextAlive() {
     try {
@@ -61,6 +61,7 @@
     if (!item || typeof item !== 'object') return null
     const text = (value, limit) => typeof value === 'string' ? value.slice(0, limit) : undefined
     return {
+      kind: item.kind === 'chat' ? 'chat' : undefined,
       source: text(item.source, 32),
       meetingId: text(item.meetingId, 128),
       eventId: text(item.eventId, 20),
@@ -125,6 +126,8 @@
       lane: data.lane,
       owner: typeof data.owner === 'string' ? data.owner.slice(0, 512) : null,
       startedAt: Number.isFinite(data.startedAt) ? data.startedAt : Date.now(),
+      language: typeof data.language === 'string' && /^(?:auto|[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3})$/.test(data.language) ? data.language : undefined,
+      engine: data.engine === 'qwen' ? 'qwen' : undefined,
       pcm: toBase64(data.pcm),
     })
   }
@@ -149,8 +152,8 @@
     if (!active) return
 
     if (data.type === 'ready') {
-      const error = !data.processor
-        ? 'Chrome ini belum bisa membaca audio per peserta. Perbarui Chrome ke versi terbaru.'
+      const error = !data.captions
+        ? 'Chrome ini belum mendukung koneksi rapat Meet. Perbarui Chrome ke versi terbaru.'
         : !data.peers
           ? 'Muat ulang tab Meet setelah memperbarui extension, lalu masuk rapat dan mulai lagi.'
           : null
@@ -161,8 +164,20 @@
       return
     }
 
+    if (data.type === 'languageSuggestion') {
+      const code = typeof data.code === 'string' && /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/.test(data.code) ? data.code : null
+      if (code) send({ event: 'languageSuggestion', code, reason: typeof data.reason === 'string' ? data.reason.slice(0, 20) : '' })
+      return
+    }
     if (['roster', 'devices', 'error', 'stats'].includes(data.type)) {
-      send({ event: data.type, users: data.users, devices: data.devices, message: data.message, stats: data.stats })
+      send({
+        event: data.type,
+        users: data.users,
+        selfId: typeof data.selfId === 'string' ? data.selfId.slice(0, 512) : undefined,
+        devices: data.devices,
+        message: data.message,
+        stats: data.stats,
+      })
     } else if (data.type === 'utterances' && Array.isArray(data.utterances)) {
       send({ event: 'utterances', utterances: data.utterances.slice(0, MAX_UTTERANCES).map(utteranceFields).filter(Boolean) })
     }
@@ -175,12 +190,18 @@
       respond({ ok: true })
       return
     }
+    if (message.type === 'switchLanguage') {
+      const code = typeof message.code === 'string' && /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/.test(message.code) ? message.code : null
+      if (session && code) control('switchLanguage', session, code)
+      respond({ ok: Boolean(session && code) })
+      return
+    }
     if (message.type !== 'start' || typeof message.session !== 'string') return
     stop()
     session = message.session
     openPort()
     pendingStart = respond
-    control('start')
+    control('start', session, typeof message.language === 'string' ? message.language.slice(0, 16) : undefined)
     startTimer = setTimeout(() => {
       if (!pendingStart) return
       pendingStart({ ok: false, error: 'Hook Meet belum terpasang. Muat ulang tab Meet setelah memperbarui extension.' })

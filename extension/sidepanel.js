@@ -1,6 +1,12 @@
 import { readConfig } from './config.js'
+import { combineLines } from './transcriptBlocks.js'
 
 const el = (id) => document.getElementById(id)
+const LANGUAGE_NAMES = {
+  'id-ID': 'Indonesia', 'en-US': 'Inggris', 'es-ES': 'Spanyol', 'pt-BR': 'Portugis', 'fr-FR': 'Prancis', 'de-DE': 'Jerman',
+  'it-IT': 'Italia', 'nl-NL': 'Belanda', 'vi-VN': 'Vietnam', 'ja-JP': 'Jepang', 'cmn-Hans-CN': 'Mandarin', 'ko-KR': 'Korea',
+  'th-TH': 'Thai', 'ar-EG': 'Arab', 'ru-RU': 'Rusia', 'hi-IN': 'Hindi', 'he-IL': 'Ibrani', 'el-GR': 'Yunani',
+}
 let config = null
 let activeTab = null
 let loggedIn = false
@@ -151,26 +157,99 @@ function scrollToLatest() {
   show(el('jumpLatest'), false)
 }
 
-function buildLine(entry, startedAt) {
+const SVG_NS = 'http://www.w3.org/2000/svg'
+const CHAT_ICON = ['M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.6c-.5.4-1.3.1-1.3-.6V16A2.5 2.5 0 0 1 4 13.5z']
+const COPY_ICON = ['M9 9.5A1.5 1.5 0 0 1 10.5 8h8A1.5 1.5 0 0 1 20 9.5v9a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 9 18.5z', 'M15 8V5.5A1.5 1.5 0 0 0 13.5 4h-8A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H9']
+const CHECK_ICON = ['M5 12.5l4.5 4.5L19 7.5']
+
+function icon(paths, className = '') {
+  const svg = document.createElementNS(SVG_NS, 'svg')
+  svg.setAttribute('viewBox', '0 0 24 24')
+  svg.setAttribute('width', '13')
+  svg.setAttribute('height', '13')
+  svg.setAttribute('fill', 'none')
+  svg.setAttribute('stroke', 'currentColor')
+  svg.setAttribute('stroke-width', '2')
+  svg.setAttribute('stroke-linecap', 'round')
+  svg.setAttribute('stroke-linejoin', 'round')
+  svg.setAttribute('aria-hidden', 'true')
+  if (className) svg.setAttribute('class', className)
+  for (const d of paths) {
+    const path = document.createElementNS(SVG_NS, 'path')
+    path.setAttribute('d', d)
+    svg.appendChild(path)
+  }
+  return svg
+}
+
+async function copyEntry(button, entry, startedAt) {
+  const stamp = startedAt && entry.at ? `[${formatClock(entry.at - startedAt)}] ` : ''
+  const who = entry.speaker ? `${entry.speaker}${entry.chat ? ' (Chat)' : ''}: ` : ''
+  try {
+    await navigator.clipboard.writeText(`${stamp}${who}${entry.text}`)
+  } catch {
+    return
+  }
+  button.replaceChildren(icon(CHECK_ICON))
+  button.classList.add('done')
+  setTimeout(() => {
+    button.replaceChildren(icon(COPY_ICON))
+    button.classList.remove('done')
+  }, 1200)
+}
+
+function continues(entries, index) {
+  const entry = entries[index]
+  const previous = entries[index - 1]
+  return Boolean(previous && entry)
+    && (previous.speaker ?? '') === (entry.speaker ?? '')
+    && previous.participantId === entry.participantId
+}
+
+function buildLine(entry, startedAt, continued = false) {
   const row = document.createElement('div')
-  row.className = 'liveLine'
+  row.className = continued ? 'liveLine continued' : 'liveLine'
   row.dataset.speaker = entry.speaker ?? ''
   row.dataset.text = entry.text
+  row.dataset.continued = continued ? '1' : ''
 
   const header = document.createElement('div')
   header.className = 'speaker'
 
   const who = document.createElement('span')
   who.className = 'who'
-  who.textContent = entry.speaker ?? 'Rapat'
+  who.textContent = continued ? '' : entry.speaker ?? 'Rapat'
+  who.hidden = continued
   header.appendChild(who)
 
+  if (entry.chat) {
+    row.classList.add('chat')
+    const badge = icon(CHAT_ICON, 'chatIcon')
+    badge.setAttribute('role', 'img')
+    badge.setAttribute('aria-label', 'Dari chat')
+    const tip = document.createElementNS(SVG_NS, 'title')
+    tip.textContent = 'Dari chat'
+    badge.prepend(tip)
+    who.after(badge)
+  }
+
+  const meta = document.createElement('span')
+  meta.className = 'lineMeta'
   if (startedAt && entry.at) {
     const stamp = document.createElement('span')
     stamp.className = 'stamp'
     stamp.textContent = formatClock(entry.at - startedAt)
-    header.appendChild(stamp)
+    meta.appendChild(stamp)
   }
+  const copy = document.createElement('button')
+  copy.type = 'button'
+  copy.className = 'copyLine'
+  copy.title = 'Salin bagian ini'
+  copy.setAttribute('aria-label', 'Salin bagian ini')
+  copy.appendChild(icon(COPY_ICON))
+  copy.addEventListener('click', () => copyEntry(copy, entry, startedAt))
+  meta.appendChild(copy)
+  header.appendChild(meta)
 
   const body = document.createElement('div')
   body.className = 'body'
@@ -242,7 +321,7 @@ function applySearch() {
     const body = row.querySelector('.body')
     const who = row.querySelector('.who')
     const textHits = highlightInto(body, row.dataset.text ?? '', query)
-    const speakerHits = highlightInto(who, row.dataset.speaker || 'Rapat', query)
+    const speakerHits = row.dataset.continued ? 0 : highlightInto(who, row.dataset.speaker || 'Rapat', query)
     if (query && textHits + speakerHits > 0) matches.push(row)
   }
 
@@ -275,7 +354,7 @@ function setSearchOpen(open) {
 
 function renderTranscript(state) {
   const lines = el('liveLines')
-  const entries = state.lines ?? []
+  const entries = combineLines(state.lines ?? [])
 
   if (entries.length < renderedCount) {
     lines.textContent = ''
@@ -291,13 +370,16 @@ function renderTranscript(state) {
   for (let i = 0; i < Math.min(renderedCount, entries.length); i++) {
     const rendered = lines.children[i]
     const entry = entries[i]
-    if (rendered && entry && (rendered.dataset.text !== entry.text || rendered.dataset.speaker !== (entry.speaker ?? ''))) {
-      lines.replaceChild(buildLine(entry, state.startedAt), rendered)
+    const continued = continues(entries, i)
+    if (rendered && entry && (rendered.dataset.text !== entry.text
+      || rendered.dataset.speaker !== (entry.speaker ?? '')
+      || Boolean(rendered.dataset.continued) !== continued)) {
+      lines.replaceChild(buildLine(entry, state.startedAt, continued), rendered)
     }
   }
 
   for (let i = renderedCount; i < entries.length; i++) {
-    lines.appendChild(buildLine(entries[i], state.startedAt))
+    lines.appendChild(buildLine(entries[i], state.startedAt, continues(entries, i)))
   }
   renderedCount = entries.length
 
@@ -363,30 +445,25 @@ function renderControls(state) {
   const attendance = state.attendance ?? []
   const onMeet = state.source === 'meet'
   show(el('watcherHint'), recording && onMeet && !state.watcherOn)
-  show(el('captionHint'), recording && onMeet && state.watcherOn)
   if (attendance.length > 0) el('attendanceRow').textContent = `Hadir: ${attendance.join(', ')}`
   show(el('attendanceRow'), recording && attendance.length > 0)
-
-  const diag = state.meetStats
-  if (diag) {
-    const lane = state.laneStats
-    const parts = [
-      `jalur peserta ${diag.lanes}`,
-      `jalur kamu ${diag.localLanes} ${diag.localMic ? 'aktif' : 'mute'}`,
-      `frame ${diag.frames}`,
-      `terkirim ${diag.sent}`,
-      `level ${diag.maxLevel}`,
-      `rms ${diag.maxRms}`,
-      `pemetaan ${diag.mapped}`,
-      `soket ${lane?.sockets ?? 0}`,
-      `hasil ${lane?.finals ?? 0}`,
-    ]
-    if (diag.format) parts.push(diag.format)
-    const problem = diag.error || lane?.lastError
-    if (problem) parts.push(`error ${problem}`)
-    el('diagRow').textContent = `Diagnostik: ${parts.join(' · ')}`
+  const active = onMeet ? state.meetStats?.language : ''
+  if (active) {
+    const name = LANGUAGE_NAMES[active] ?? active
+    const mode = state.meetStats.autoLanguage ? ' · otomatis' : ''
+    const mic = state.meetStats.localMic ? ' · suara kamu lewat Deepgram' : ''
+    el('languageRow').textContent = `Bahasa caption: ${name}${mode}${mic}`
   }
-  show(el('diagRow'), recording && onMeet && Boolean(diag))
+  show(el('languageRow'), recording && Boolean(active))
+  const offer = recording && onMeet ? state.languageSuggestion : null
+  if (offer) {
+    const name = LANGUAGE_NAMES[offer.code] ?? offer.code
+    el('languageSuggestText').textContent = `Terdeteksi bahasa ${name}`
+    el('languageSuggestApply').textContent = `Ganti ke ${name}`
+    el('languageSuggest').dataset.code = offer.code
+  }
+  show(el('languageSuggest'), Boolean(offer))
+  if (!recording) closeCancelModal()
   el('sheet').className = recording ? 'sheet compact' : 'sheet'
 
   if (recording) {
@@ -408,7 +485,7 @@ function renderControls(state) {
     }
     button.disabled = false
     button.className = 'primaryAction grow recording'
-    el('recordLabel').textContent = 'Berhenti dan kirim'
+    el('recordLabel').textContent = 'Selesai'
   } else if (uploading) {
     if (state.upload?.retryAt) {
       el('tabState').textContent = `Gagal mengirim. Mencoba lagi dalam ${secondsUntil(state.upload.retryAt)} detik (${state.upload.attempt}/${state.upload.max}). Rekaman aman.`
@@ -518,13 +595,56 @@ el('searchInput').addEventListener('keydown', (event) => {
   }
 })
 
-el('cancelButton').addEventListener('click', async () => {
-  if (!latestState || (latestState.status !== 'recording' && latestState.status !== 'starting')) return
-  const sure = window.confirm('Batalkan rekaman ini? Audio dan transkrip yang sudah jalan akan dibuang dan tidak dikirim ke Rekapin.')
-  if (!sure) return
+function cancellable() {
+  return Boolean(latestState) && (latestState.status === 'recording' || latestState.status === 'starting')
+}
+
+function openCancelModal() {
+  show(el('cancelModal'), true)
+  el('cancelKeep').focus()
+}
+
+function closeCancelModal() {
+  show(el('cancelModal'), false)
+  el('cancelConfirm').disabled = false
+}
+
+el('cancelButton').addEventListener('click', () => {
+  if (cancellable()) openCancelModal()
+})
+
+el('cancelKeep').addEventListener('click', closeCancelModal)
+
+async function answerSuggestion(type) {
+  const code = el('languageSuggest').dataset.code
+  if (!code) return
+  el('languageSuggestApply').disabled = true
+  await chrome.runtime.sendMessage({ target: 'service', type, code }).catch(() => null)
+  el('languageSuggestApply').disabled = false
+  await pullState()
+}
+
+el('languageSuggestApply').addEventListener('click', () => answerSuggestion('switchLanguage'))
+el('languageSuggestDismiss').addEventListener('click', () => answerSuggestion('dismissLanguage'))
+
+el('cancelModal').addEventListener('click', (event) => {
+  if (event.target === el('cancelModal')) closeCancelModal()
+})
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !el('cancelModal').hidden) closeCancelModal()
+})
+
+el('cancelConfirm').addEventListener('click', async () => {
+  if (!cancellable()) {
+    closeCancelModal()
+    return
+  }
+  el('cancelConfirm').disabled = true
   el('cancelButton').disabled = true
-  await chrome.runtime.sendMessage({ target: 'service', type: 'cancel' })
+  await chrome.runtime.sendMessage({ target: 'service', type: 'cancel' }).catch(() => null)
   el('cancelButton').disabled = false
+  closeCancelModal()
   await pullState()
 })
 
@@ -547,9 +667,12 @@ el('languageGroup').addEventListener('click', (event) => {
 })
 
 el('copyTranscript').addEventListener('click', async () => {
-  const entries = latestState?.lines ?? []
+  const entries = combineLines(latestState?.lines ?? [])
   if (entries.length === 0) return
-  const text = entries.map((entry) => (entry.speaker ? `${entry.speaker}: ${entry.text}` : entry.text)).join('\n')
+  const text = entries.map((entry) => {
+    const who = entry.speaker ? `${entry.speaker}${entry.chat ? ' (Chat)' : ''}: ` : entry.chat ? 'Chat: ' : ''
+    return `${who}${entry.text}`
+  }).join('\n')
   await navigator.clipboard.writeText(text)
   el('copyTranscript').textContent = 'Tersalin'
   setTimeout(() => {

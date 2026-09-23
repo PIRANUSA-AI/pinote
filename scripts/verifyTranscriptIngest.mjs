@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
-import { applyMeetEvent, applyUtterance, nativeTranscript } from '../extension/meetTranscript.js'
+import { applyMeetEvent, applyUtterance, claimSelfVoice, nativeTranscript } from '../extension/meetTranscript.js'
 import { nativeSegments, nativeTranscriptSchema } from '../backend/dist/lib/nativeTranscript.js'
 
 const base = { source: 'meet', meetingId: 'abc-defg-hij', participantId: 'spaces/s/devices/1', eventId: '10', version: '1', text: 'Halo', timestamp: Date.now() - 3000 }
@@ -75,6 +75,21 @@ assert.equal(state.lines.at(-1).text, 'Setelah jeda')
 assert.equal(applyUtterance({ ...fresh(), source: 'zoom' }, { ...base, source: 'zoom' }), true, 'Isolation follows the active session source')
 assert.equal(applyUtterance({ ...fresh(), startedAt: null }, base), false, 'Nothing is stored outside a session')
 
+const chatState = fresh()
+assert.equal(applyUtterance(chatState, { ...base, kind: 'chat', eventId: '10', version: '0', text: 'Ini link notulen' }), true)
+assert.equal(applyUtterance(chatState, { ...base, eventId: '10', text: 'Halo' }), true, 'A chat and a caption with the same id stay separate')
+assert.equal(chatState.lines.length, 2)
+assert.equal(chatState.lines[0].text, 'Ini link notulen', 'Chat text is stored as written so the panel can show a badge')
+assert.equal(chatState.lines[0].chat, true)
+assert.equal(nativeTranscript(chatState)[0].text, 'Chat: Ini link notulen', 'The upload still marks chat for the backend')
+assert.equal(applyUtterance(chatState, { ...base, kind: 'chat', eventId: '10', version: '0', text: 'Ini link notulen' }), false, 'A chat seen twice is stored once')
+
+const selfState = { ...fresh(), meetSelfName: 'Yoel' }
+applyMeetEvent(selfState, { event: 'roster', users: [], selfId: 'spaces/s/devices/9' })
+assert.equal(selfState.meetSelfId, 'spaces/s/devices/9')
+applyUtterance(selfState, { ...base, participantId: 'spaces/s/devices/9', text: 'Saya sendiri' })
+assert.equal(selfState.lines[0].speaker, 'Yoel', 'Your own device falls back to your account name')
+
 const native = nativeTranscript(state)
 assert.equal(nativeTranscriptSchema.safeParse(native).success, true, 'Upload payload matches the backend schema')
 const segments = nativeSegments(native)
@@ -85,15 +100,18 @@ const kept = segments.filter((s) => s.participantId === 'spaces/s/devices/1' && 
 assert.deepEqual(kept.map((s) => s.text), ['Versi besar'], 'Backend keeps only the highest version per participant and event')
 
 const noopEvent = { addListener() {} }
+const tabMessages = []
 const service = vm.createContext({
-  applyMeetEvent, applyUtterance, nativeTranscript, Date, URL, crypto: globalThis.crypto,
+  applyMeetEvent, applyUtterance, claimSelfVoice, nativeTranscript, Date, URL, crypto: globalThis.crypto,
   chrome: {
+    tabs: { sendMessage: async (tabId, message) => { tabMessages.push({ tabId, message }) } },
     sidePanel: { setPanelBehavior: async () => {} },
     storage: { local: { remove: async () => {}, get: async () => ({}), set: async () => {} }, onChanged: noopEvent },
     contextMenus: { onClicked: noopEvent }, commands: { onCommand: noopEvent },
     runtime: { onInstalled: noopEvent, onMessage: noopEvent, sendMessage: async () => {} },
   },
 })
+vm.runInContext(readFileSync(new URL('../extension/languageDetect.js', import.meta.url), 'utf8'), service)
 vm.runInContext(readFileSync(new URL('../extension/background.js', import.meta.url), 'utf8').replace(/^import .*\r?\n/gm, ''), service)
 await vm.runInContext('ready', service)
 vm.runInContext("Object.assign(state, { status: 'recording', source: 'meet', tabId: 42, sessionId: 's1', startedAt: Date.now(), lines: [] })", service)
@@ -110,6 +128,84 @@ run("state.source = 'zoom'")
 assert.equal((await run('handleServiceMessage(batch, { tab: { id: 42 }, frameId: 0 })')).ok, false, 'Non Meet sessions never take Meet events')
 run("state.source = 'meet'; state.paused = true")
 assert.equal((await run('handleServiceMessage(batch, { tab: { id: 42 }, frameId: 0 })')).ok, false, 'Paused sessions take nothing')
+run("state.paused = false; state.lines = []; state.meetSelfId = 'spaces/s/devices/9'; state.meetStats = { localMic: true }; state.laneStats = null")
+service.selfBatch = { type: 'meetNative', session: 's1', event: 'utterances', utterances: [
+  { ...base, participantId: 'spaces/s/devices/9', eventId: '70', text: 'Dari CC saya' },
+  { ...base, kind: 'chat', participantId: 'spaces/s/devices/9', eventId: '71', version: '0', text: 'Chat saya' },
+  { ...base, participantId: 'spaces/s/devices/5', eventId: '72', text: 'Dari CC orang lain' },
+] }
+await run('handleServiceMessage(selfBatch, { tab: { id: 42 }, frameId: 0 })')
+assert.deepEqual([...run('state.lines.map((l) => l.text)')], ['Chat saya', 'Dari CC orang lain'], 'With your mic on, Deepgram replaces Meet captions of your own voice, but chat and others stay')
+run("state.laneStats = { sockets: 0, errors: 1, errorAt: Date.now() }")
+await run("handleServiceMessage({ ...selfBatch, utterances: [{ ...selfBatch.utterances[0], eventId: '73', text: 'CC cadangan' }] }, { tab: { id: 42 }, frameId: 0 })")
+assert.ok(run("state.lines.some((l) => l.text === 'CC cadangan')"), 'When Deepgram fails, Meet captions of your voice come back')
+run("state.laneStats = null; state.meetStats = { localMic: false }")
+await run("handleServiceMessage({ ...selfBatch, utterances: [{ ...selfBatch.utterances[0], eventId: '74', text: 'Mic mati' }] }, { tab: { id: 42 }, frameId: 0 })")
+assert.ok(run("state.lines.some((l) => l.text === 'Mic mati')"), 'With your mic off, Meet captions are used')
+run("handleOffscreenEvent({ type: 'laneFinal', participantId: 'local', text: 'Dari Deepgram', startedAt: Date.now() - 1000 })")
+const deepgramLine = run("state.lines.find((l) => l.text === 'Dari Deepgram')")
+assert.equal(deepgramLine.participantId, 'spaces/s/devices/9', 'Deepgram lines carry your Meet device, so names and blocks line up')
+
+run("Object.assign(state, { lines: [], meetSelfId: null, selfSuppressed: [], meetStats: { localMic: true }, laneStats: null, meetParticipants: { 'spaces/s/devices/8': { name: 'Yoel Andreas', parentId: '' } } })")
+run("handleOffscreenEvent({ type: 'laneFinal', participantId: 'local', text: 'Halo semua ini tes pertama', startedAt: Date.now() - 9000 })")
+assert.equal(run("state.lines.at(-1).participantId"), 'local', 'Before your device is known, Deepgram lines use your account')
+service.echoBatch = { type: 'meetNative', session: 's1', event: 'utterances', utterances: [
+  { ...base, participantId: 'spaces/s/devices/8', eventId: '80', version: '3', text: 'oke deh udah udah cukup sih udah cukup thank you', timestamp: Date.now() - 4000 },
+  { ...base, participantId: 'spaces/s/devices/5', eventId: '81', version: '1', text: 'aman oke sip lanjut aja', timestamp: Date.now() - 3000 },
+] }
+await run('handleServiceMessage(echoBatch, { tab: { id: 42 }, frameId: 0 })')
+assert.equal(run('state.lines.length'), 3)
+run("handleOffscreenEvent({ type: 'laneFinal', participantId: 'local', text: 'Oke deh, udah udah cukup sih, udah cukup. Thank you thank you.', startedAt: Date.now() - 5000 })")
+assert.equal(run('state.meetSelfId'), 'spaces/s/devices/8', 'The Meet caption that matches your Deepgram words reveals your device')
+assert.deepEqual([...run("state.lines.map((l) => l.participantId + ':' + l.text.slice(0, 12))")], [
+  'spaces/s/devices/8:Halo semua i',
+  'spaces/s/devices/5:aman oke sip',
+  'spaces/s/devices/8:Oke deh, uda',
+], 'The duplicate Meet caption is removed, and earlier Deepgram lines move to your device')
+assert.equal(run('state.lines[0].speaker'), 'Yoel Andreas', 'Your lines take your Meet name')
+await run("handleServiceMessage({ ...echoBatch, utterances: [{ ...echoBatch.utterances[0], version: '4', text: 'oke deh udah udah cukup sih udah cukup thank you thank you' }] }, { tab: { id: 42 }, frameId: 0 })")
+assert.equal(run('state.lines.length'), 3, 'Later revisions of a removed caption never come back')
+
+const switches = () => tabMessages.filter((m) => m.message.type === 'switchLanguage').map((m) => m.message.code)
+const japanese = 'その朝の空はまだ少し曇っていたけれど、空気はひんやりと気持ちよかった。'
+service.japanese = japanese
+const linesBefore = run('state.lines.length')
+run("state.meetStats = { autoLanguage: false, language: 'id-ID', localMic: true }")
+run("handleOffscreenEvent({ type: 'languageProbe', text: japanese }); handleOffscreenEvent({ type: 'languageProbe', text: japanese })")
+assert.equal(run('state.languageSuggestion'), null, 'Without auto language nothing is suggested')
+run("state.meetStats = { autoLanguage: true, language: 'id-ID', localMic: true }; state.voiceLanguages = {}")
+run("handleOffscreenEvent({ type: 'languageProbe', text: 'जायें' })")
+run("handleOffscreenEvent({ type: 'languageProbe', text: japanese })")
+assert.equal(run('state.languageSuggestion'), null, 'One sample, or samples that disagree, suggest nothing')
+run("handleOffscreenEvent({ type: 'languageProbe', text: japanese })")
+assert.equal(run('state.languageSuggestion.code'), 'ja-JP', 'Two Qwen samples that agree suggest Japanese')
+assert.equal(run('state.languageSuggestion.source'), 'voice')
+assert.equal(run('state.lines.length'), linesBefore, 'Identifier samples never become transcript lines')
+run("state.languageSuggestion = null; state.dismissedLanguages = {}; state.voiceLanguages = {}")
+service.mandarin = '那天早上天空还有点阴沉但空气很清爽一个小孩慢慢走向学校'
+run("handleOffscreenEvent({ type: 'languageProbe', source: 'participants', text: mandarin })")
+run("handleOffscreenEvent({ type: 'languageProbe', source: 'voice', text: japanese })")
+assert.equal(run('state.languageSuggestion'), null, 'Evidence from your voice and from other participants is never mixed')
+run("handleOffscreenEvent({ type: 'languageProbe', source: 'participants', text: mandarin })")
+assert.equal(run('state.languageSuggestion.code'), 'cmn-Hans-CN', 'Two samples of Mandarin from other participants suggest Mandarin')
+assert.equal(run('state.languageSuggestion.source'), 'participants')
+run("state.languageSuggestion = { code: 'ja-JP', source: 'voice', at: Date.now() }")
+assert.equal(switches().length, 0, 'A suggestion alone never changes Meet')
+assert.equal((await run("handleServiceMessage({ type: 'switchLanguage', code: 'ja-JP' }, { tab: { id: 42 } })")).ok, false, 'Only the panel can accept a suggestion')
+await run("handleServiceMessage({ type: 'switchLanguage', code: 'ja-JP' }, {})")
+assert.deepEqual(switches(), ['ja-JP'], 'Accepting the suggestion tells the Meet tab to switch')
+assert.equal(tabMessages.at(-1).tabId, 42)
+assert.equal(run('state.languageSuggestion'), null)
+service.captionOffer = { type: 'meetNative', session: 's1', event: 'languageSuggestion', code: 'en-US', reason: 'evidence' }
+await run('handleServiceMessage(captionOffer, { tab: { id: 42 }, frameId: 0 })')
+assert.equal(run('state.languageSuggestion.code'), 'en-US', 'Caption evidence from the page is offered too')
+await run("handleServiceMessage({ type: 'dismissLanguage', code: 'en-US' }, {})")
+assert.equal(run('state.languageSuggestion'), null)
+await run('handleServiceMessage(captionOffer, { tab: { id: 42 }, frameId: 0 })')
+assert.equal(run('state.languageSuggestion'), null, 'A dismissed language stays quiet for a while')
+run("applyMeetStats({ autoLanguage: true, language: 'id-ID' }); state.languageSuggestion = { code: 'id-ID' }; applyMeetStats({ autoLanguage: true, language: 'id-ID' })")
+assert.equal(run('state.languageSuggestion'), null, 'A suggestion disappears once Meet already uses that language')
+
 run('reset()')
 assert.equal(run('state.utteranceMeeting'), null, 'Reset clears the meeting binding')
 assert.equal(run('state.lines.length'), 0)
@@ -143,7 +239,7 @@ const fromPage = (data) => {
   vm.runInContext('_deliver({ source: window, origin: location.origin, data: _payload })', bridge)
 }
 bridgeHandler({ target: 'meetBridge', type: 'start', session: 'b1' }, {}, () => {})
-fromPage({ session: 'b1', type: 'ready', peers: 1, processor: true })
+fromPage({ session: 'b1', type: 'ready', peers: 1, captions: true })
 fromPage({ session: 'b1', type: 'utterances', utterances: [{ ...base, text: 'y'.repeat(20000), extra: 'drop', isFinal: 'yes' }, null, ...Array(300).fill(base)] })
 const forwarded = sent.find((m) => m.event === 'utterances')
 assert.ok(forwarded, 'The bridge forwards utterance batches')
@@ -152,6 +248,22 @@ assert.equal(forwarded.utterances.length, 199, 'Batches are capped and invalid e
 assert.equal(forwarded.utterances[0].text.length, 10000)
 assert.equal(forwarded.utterances[0].extra, undefined, 'Unknown fields are stripped')
 assert.equal(forwarded.utterances[0].isFinal, false, 'Only a real boolean true is final')
+const controlsSent = []
+bridge.postMessage = (message) => controlsSent.push(message)
+let switchReply = null
+bridgeHandler({ target: 'meetBridge', type: 'switchLanguage', code: 'ja-JP' }, {}, (reply) => { switchReply = reply })
+assert.equal(switchReply.ok, true)
+assert.equal(controlsSent.at(-1).type, 'switchLanguage', 'The bridge forwards a language switch to the page')
+assert.equal(controlsSent.at(-1).language, 'ja-JP')
+bridgeHandler({ target: 'meetBridge', type: 'switchLanguage', code: 'x;alert(1)' }, {}, (reply) => { switchReply = reply })
+assert.equal(switchReply.ok, false, 'Malformed language codes are refused')
+sent = []
+fromPage({ session: 'b1', type: 'utterances', utterances: [{ ...base, kind: 'chat' }, { ...base, kind: 'evil' }] })
+const kinds = sent.find((m) => m.event === 'utterances').utterances.map((u) => u.kind)
+assert.deepEqual(kinds, ['chat', undefined], 'Only the chat kind passes the bridge')
+sent = []
+fromPage({ session: 'b1', type: 'roster', users: [], selfId: 'spaces/s/devices/9' })
+assert.equal(sent.find((m) => m.event === 'roster').selfId, 'spaces/s/devices/9', 'The bridge forwards your own device id')
 sent = []
 fromPage({ session: 'other', type: 'utterances', utterances: [base] })
 assert.equal(sent.length, 0, 'Other sessions are ignored by the bridge')

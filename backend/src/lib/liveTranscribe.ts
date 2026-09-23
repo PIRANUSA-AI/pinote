@@ -4,9 +4,10 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import type { User } from '../db/schema.js'
 import { findSession } from '../services/auth.js'
 import { DeepgramLiveSession } from '../services/deepgramLive.js'
+import { QwenRealtimeSession } from '../services/qwenRealtime.js'
 import { LIVE_SAMPLE_RATE, OpenAiRealtimeSession, type LiveTranscriptionHandlers } from '../services/openaiRealtime.js'
 
-type LiveSession = OpenAiRealtimeSession | DeepgramLiveSession
+type LiveSession = OpenAiRealtimeSession | DeepgramLiveSession | QwenRealtimeSession
 
 function liveProvider(): 'deepgram' | 'openai' {
   const chosen = (process.env.LIVE_PROVIDER ?? '').trim().toLowerCase()
@@ -14,10 +15,23 @@ function liveProvider(): 'deepgram' | 'openai' {
   return process.env.DEEPGRAM_API_KEY ? 'deepgram' : 'openai'
 }
 
-function createLiveSession(language: 'id' | 'en' | 'auto', handlers: LiveTranscriptionHandlers, sampleRate: number): LiveSession {
+const LANGUAGE_CODE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/
+
+function parseLanguage(value: unknown): string {
+  if (typeof value !== 'string' || value === 'auto') return 'auto'
+  return value.length <= 32 && LANGUAGE_CODE.test(value) ? value : 'auto'
+}
+
+function openAiLanguage(language: string): 'id' | 'en' | 'auto' {
+  const primary = language.split('-')[0]?.toLowerCase()
+  return primary === 'id' || primary === 'en' ? primary : 'auto'
+}
+
+function createLiveSession(language: string, handlers: LiveTranscriptionHandlers, sampleRate: number, engine: string | null): LiveSession {
+  if (engine === 'qwen' && process.env.QWEN_API_KEY) return new QwenRealtimeSession(language, handlers, sampleRate)
   return liveProvider() === 'deepgram'
     ? new DeepgramLiveSession(language, handlers, sampleRate)
-    : new OpenAiRealtimeSession(language, handlers, sampleRate)
+    : new OpenAiRealtimeSession(openAiLanguage(language), handlers, sampleRate)
 }
 
 const LIVE_PATH = '/live'
@@ -82,7 +96,7 @@ function handleConnection(ws: WebSocket, user: User): void {
     console.log(`Live session for ${user.id} ended after ${Math.ceil(streamedBytes / BYTES_PER_SECOND)}s of audio`)
   }
 
-  const start = (language: 'id' | 'en' | 'auto', sampleRate: number) => {
+  const start = (language: string, sampleRate: number, engine: string | null) => {
     if (session) return
     session = createLiveSession(language, {
       onReady: () => send({ type: 'ready' }),
@@ -90,7 +104,7 @@ function handleConnection(ws: WebSocket, user: User): void {
       onFinal: (text, tag) => send({ type: 'final', text, tag }),
       onError: (message) => send({ type: 'error', message }),
       onClose: () => send({ type: 'upstreamClosed' }),
-    }, sampleRate)
+    }, sampleRate, engine)
     session.connect()
   }
 
@@ -108,7 +122,7 @@ function handleConnection(ws: WebSocket, user: User): void {
       return
     }
 
-    let message: { type?: string; language?: string; sampleRate?: number; tag?: unknown }
+    let message: { type?: string; language?: string; sampleRate?: number; tag?: unknown; engine?: unknown }
     try {
       message = JSON.parse(data.toString())
     } catch {
@@ -116,12 +130,12 @@ function handleConnection(ws: WebSocket, user: User): void {
     }
 
     if (message.type === 'start') {
-      const language = message.language === 'id' || message.language === 'en' ? message.language : 'auto'
+      const language = parseLanguage(message.language)
       const requested = Number(message.sampleRate)
       const sampleRate = Number.isFinite(requested) && requested >= 8000 && requested <= 48000
         ? Math.round(requested)
         : LIVE_SAMPLE_RATE
-      start(language, sampleRate)
+      start(language, sampleRate, message.engine === 'qwen' ? 'qwen' : null)
       return
     }
 

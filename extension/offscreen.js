@@ -9,6 +9,13 @@ const SILENCE_FLUSH_MS = 700
 const LANE_SAMPLE_RATE = 24000
 const MAX_LANE_SOCKETS = 8
 const LANE_QUEUE_LIMIT = 300
+const LANE_RETIRE_MS = 2500
+const TAB_PROBE_LANE = 9002
+const TAB_PROBE_MS = 4000
+const TAB_PROBE_TAIL_MS = 1200
+const TAB_PROBE_GAP_MS = 15000
+const TAB_QUIET_MS = 700
+const PARTICIPANTS_OWNER = 'participants'
 const DRAIN_WAIT_MS = 2500
 
 let capture = null
@@ -166,18 +173,32 @@ function laneSend(entry, payload) {
   else if (entry.queue.length < LANE_QUEUE_LIMIT) entry.queue.push(payload)
 }
 
-function laneEntry(current, lane) {
+function laneLanguage(code) {
+  const primary = String(code ?? '').split('-')[0].toLowerCase()
+  return primary === 'id' || primary === 'en' ? primary : code
+}
+
+function laneEntry(current, lane, language, engine) {
   const existing = current.lanes.get(lane)
-  if (existing && existing.socket.readyState <= WebSocket.OPEN) return existing
-  if (!existing && current.lanes.size >= MAX_LANE_SOCKETS) return null
+  const wanted = language ?? current.language
+  if (existing && existing.socket.readyState <= WebSocket.OPEN) {
+    if (existing.language === wanted && existing.engine === engine) return existing
+    laneSend(existing, JSON.stringify({ type: 'flush' }))
+    const retiring = existing.socket
+    setTimeout(() => {
+      try { retiring.close() } catch {}
+    }, LANE_RETIRE_MS)
+    current.lanes.delete(lane)
+  }
+  if (!current.lanes.has(lane) && current.lanes.size >= MAX_LANE_SOCKETS) return null
 
   const socket = new WebSocket(websocketUrl(current.apiBase))
   socket.binaryType = 'arraybuffer'
-  const entry = { socket, queue: [], tag: null }
+  const entry = { socket, queue: [], tag: null, language: wanted, engine }
   current.lanes.set(lane, entry)
 
   socket.addEventListener('open', () => {
-    socket.send(JSON.stringify({ type: 'start', language: current.language, sampleRate: LANE_SAMPLE_RATE }))
+    socket.send(JSON.stringify({ type: 'start', language: laneLanguage(wanted), sampleRate: LANE_SAMPLE_RATE, engine }))
     for (const item of entry.queue) socket.send(item)
     entry.queue = []
     reportLaneStats(current)
@@ -191,13 +212,19 @@ function laneEntry(current, lane) {
       return
     }
     const { participantId, startedAt } = parseTag(message.tag)
+    const probe = entry.engine === 'qwen'
     if (message.type === 'partial') {
-      report({ type: 'lanePartial', lane, participantId, text: message.text })
+      if (!probe) report({ type: 'lanePartial', lane, participantId, text: message.text })
     } else if (message.type === 'final') {
+      if (probe) {
+        report({ type: 'languageProbe', source: participantId === PARTICIPANTS_OWNER ? 'participants' : 'voice', text: message.text })
+        return
+      }
       current.laneFinals++
       report({ type: 'laneFinal', lane, participantId: participantId ?? `lane:${lane}`, startedAt, text: message.text })
       reportLaneStats(current)
     } else if (message.type === 'error') {
+      if (probe) return
       current.laneErrors++
       current.laneLastError = String(message.message ?? '').slice(0, 120)
       report({ type: 'liveError', message: message.message })
@@ -207,7 +234,7 @@ function laneEntry(current, lane) {
 
   socket.addEventListener('close', (event) => {
     if (current.lanes.get(lane) === entry) current.lanes.delete(lane)
-    if (event.code !== 1000 && event.code !== 1005 && !current.stopping) {
+    if (event.code !== 1000 && event.code !== 1005 && !current.stopping && entry.engine !== 'qwen') {
       current.laneErrors++
       current.laneLastError = `soket jalur tertutup (${event.code})`
     }
@@ -230,7 +257,9 @@ function handleLaneMessage(message, port) {
   }
 
   if (message.type !== 'lane' || current.paused || typeof message.pcm !== 'string') return
-  const entry = laneEntry(current, message.lane)
+  const language = typeof message.language === 'string' ? message.language : undefined
+  const engine = message.engine === 'qwen' ? 'qwen' : undefined
+  const entry = laneEntry(current, message.lane, language, engine)
   if (!entry) return
 
   const owner = typeof message.owner === 'string' && message.owner ? message.owner : `lane:${message.lane}`
@@ -258,6 +287,44 @@ async function drainLanes() {
   }
   await sleep(DRAIN_WAIT_MS)
   return { ok: true }
+}
+
+function frameLevel(frame) {
+  let sum = 0
+  for (let i = 0; i < frame.length; i++) {
+    const value = frame[i] / 32768
+    sum += value * value
+  }
+  return frame.length ? Math.sqrt(sum / frame.length) : 0
+}
+
+function sampleParticipants(current, buffer) {
+  if (current.language !== 'auto') return
+  const probe = current.tabProbe
+  const now = Date.now()
+  const loud = frameLevel(new Int16Array(buffer)) >= SPEECH_FLOOR
+  if (!probe.startedAt) {
+    const quietBefore = now - probe.loudAt >= TAB_QUIET_MS
+    if (loud) probe.loudAt = now
+    if (!loud || !quietBefore || now - probe.lastAt < TAB_PROBE_GAP_MS) return
+    probe.startedAt = now
+    probe.lastAt = now
+    const entry = laneEntry(current, TAB_PROBE_LANE, 'auto', 'qwen')
+    if (!entry) {
+      probe.startedAt = 0
+      return
+    }
+    laneSend(entry, JSON.stringify({ type: 'owner', tag: `${PARTICIPANTS_OWNER}|${now}` }))
+  } else if (loud) probe.loudAt = now
+  const entry = current.lanes.get(TAB_PROBE_LANE)
+  if (!entry) {
+    probe.startedAt = 0
+    return
+  }
+  const elapsed = now - probe.startedAt
+  if (elapsed < TAB_PROBE_MS) laneSend(entry, buffer)
+  else if (elapsed < TAB_PROBE_MS + TAB_PROBE_TAIL_MS) laneSend(entry, new Int16Array(buffer.byteLength / 2).buffer)
+  else probe.startedAt = 0
 }
 
 function closeLanes(current) {
@@ -346,7 +413,7 @@ async function start({ streamId, mediaSource, language, apiBase, source, tabId, 
   await asrContext.audioWorklet.addModule(chrome.runtime.getURL('pcmWorklet.js'))
   const pcmNode = new AudioWorkletNode(asrContext, 'pcmProcessor')
   const mixer = asrContext.createGain()
-  if (source !== 'meet') asrContext.createMediaStreamSource(stream).connect(mixer)
+  if (source !== 'meet' || language === 'auto') asrContext.createMediaStreamSource(stream).connect(mixer)
   if (micStream) asrContext.createMediaStreamSource(micStream).connect(mixer)
   const mute = asrContext.createGain()
   mute.gain.value = 0
@@ -382,6 +449,7 @@ async function start({ streamId, mediaSource, language, apiBase, source, tabId, 
     source: source ?? 'upload',
     tabId: Number.isSafeInteger(tabId) ? tabId : null,
     lanes: new Map(),
+    tabProbe: { startedAt: 0, lastAt: 0, loudAt: 0 },
     laneFinals: 0,
     laneErrors: 0,
     laneLastError: '',
@@ -426,6 +494,7 @@ async function start({ streamId, mediaSource, language, apiBase, source, tabId, 
     const current = capture
     if (!current || current.paused || current.stopping) return
     if (current.socket && current.socket.readyState === WebSocket.OPEN) current.socket.send(event.data)
+    else if (current.source === 'meet') sampleParticipants(current, event.data)
   }
 
   if (capture.source !== 'meet') connectLive()

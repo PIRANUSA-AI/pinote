@@ -10,6 +10,26 @@ const MAX_PENDING = 400
 
 const FOREIGN_SCRIPT = /[Ѐ-ӿ؀-ۿ฀-๿぀-ヿ一-鿿가-힯]/g
 
+const LATIN_LANGUAGES = new Set(['id', 'en', 'es', 'pt', 'fr', 'de', 'it', 'nl', 'vi', 'ms', 'tr', 'pl', 'sv', 'da', 'no', 'fi', 'cs', 'ro', 'hu'])
+const SPECIAL_CODES: Record<string, string> = { 'cmn-Hans-CN': 'zh-CN', 'cmn-Hant-TW': 'zh-TW', 'nb-NO': 'no' }
+
+export type LiveLanguage = string
+
+export function deepgramLanguage(language: LiveLanguage): string {
+  if (language === 'auto') return 'multi'
+  if (Object.hasOwn(SPECIAL_CODES, language)) return SPECIAL_CODES[language]!
+  const [primary, region] = language.split('-')
+  if (!primary) return 'multi'
+  if (primary === 'en' || primary === 'pt' || primary === 'es' || primary === 'fr' || primary === 'de' || primary === 'nl') {
+    return region && /^[A-Z]{2}$/.test(region) ? `${primary}-${region}` : primary
+  }
+  return primary.toLowerCase()
+}
+
+function latinLanguage(language: LiveLanguage): boolean {
+  return LATIN_LANGUAGES.has(language.split('-')[0]!.toLowerCase())
+}
+
 function mostlyForeign(text: string): boolean {
   const foreign = text.match(FOREIGN_SCRIPT)
   if (!foreign) return false
@@ -47,7 +67,7 @@ export class DeepgramLiveSession {
   private utterance: { tag: string | null; parts: string[] } = { tag: null, parts: [] }
 
   constructor(
-    private readonly language: 'id' | 'en' | 'auto',
+    private readonly language: LiveLanguage,
     private readonly handlers: LiveTranscriptionHandlers,
     private readonly sampleRate: number
   ) {}
@@ -61,7 +81,7 @@ export class DeepgramLiveSession {
 
     const params = new URLSearchParams({
       model: DEEPGRAM_LIVE_MODEL,
-      language: this.language === 'auto' ? 'multi' : this.language,
+      language: deepgramLanguage(this.language),
       encoding: 'linear16',
       sample_rate: String(this.sampleRate),
       channels: '1',
@@ -106,6 +126,10 @@ export class DeepgramLiveSession {
     })
   }
 
+  private filtersForeign(): boolean {
+    return this.language !== 'auto' && latinLanguage(this.language)
+  }
+
   private audioSeconds(): number {
     return this.bytesSent / (this.sampleRate * 2)
   }
@@ -124,7 +148,7 @@ export class DeepgramLiveSession {
     const tag = this.utterance.tag
     this.utterance = { tag: null, parts: [] }
     if (!text) return
-    if (this.language !== 'auto' && mostlyForeign(text)) {
+    if (this.filtersForeign() && mostlyForeign(text)) {
       console.warn(`Live transcript dibuang karena bukan bahasa ${this.language}: ${text.slice(0, 60)}`)
       return
     }
@@ -158,7 +182,7 @@ export class DeepgramLiveSession {
     if (!event.is_final) {
       if (!transcript) return
       const preview = [...(this.utterance.tag === tag ? this.utterance.parts : []), transcript].join(' ')
-      if (this.language === 'auto' || !mostlyForeign(preview)) this.handlers.onPartial(preview, tag)
+      if (!this.filtersForeign() || !mostlyForeign(preview)) this.handlers.onPartial(preview, tag)
       return
     }
 

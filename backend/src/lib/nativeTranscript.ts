@@ -17,6 +17,38 @@ function timestamp(seconds: number): string {
   return `${h ? `${h}:` : ''}${h ? String(Math.floor(s / 60) % 60).padStart(2, '0') : Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
+const JOIN_GAP_SEC = 10
+const WORD_LIMIT = 75
+const CHAT_PREFIX = 'Chat: '
+
+const wordCount = (text: string) => text.split(' ').length
+
+function canJoinText(blockText: string, nextText: string): boolean {
+  if (!blockText.endsWith('.')) return true
+  if (nextText.endsWith('.')) return wordCount(`${blockText} ${nextText}`) < WORD_LIMIT
+  return wordCount(blockText) < WORD_LIMIT / 2
+}
+
+type Block = { line: NativeTranscriptLine, lastStart: number }
+
+function combine(lines: NativeTranscriptLine[]): NativeTranscriptLine[] {
+  const blocks: Block[] = []
+  for (const line of lines) {
+    const block = blocks.at(-1)
+    const chat = line.text.startsWith(CHAT_PREFIX)
+    if (block && !chat && !block.line.text.startsWith(CHAT_PREFIX)
+      && block.line.participantId === line.participantId
+      && line.start - block.lastStart < JOIN_GAP_SEC
+      && canJoinText(block.line.text, line.text)) {
+      block.line = { ...block.line, text: `${block.line.text} ${line.text}`, end: Math.max(block.line.end, line.end) }
+      block.lastStart = line.start
+      continue
+    }
+    blocks.push({ line: { ...line }, lastStart: line.start })
+  }
+  return blocks.map((block) => block.line)
+}
+
 export function nativeSegments(lines: NativeTranscriptLine[]): TranscriptSegment[] {
   const identities = new Map<string, string>()
   for (const line of lines) if (line.name) identities.set(line.participantId, line.name)
@@ -29,7 +61,7 @@ export function nativeSegments(lines: NativeTranscriptLine[]): TranscriptSegment
     const prior = latest.get(key)
     if (!prior || BigInt(line.version) >= BigInt(prior.version)) latest.set(key, line)
   }
-  return [...latest.values()].sort((a, b) => a.start - b.start).map((line) => {
+  return combine([...latest.values()].sort((a, b) => a.start - b.start)).map((line) => {
     const name = identities.get(line.participantId)
     if (!name && !unknown.has(line.participantId)) unknown.set(line.participantId, unknown.size + 1)
     const duplicates = name ? duplicateNames.get(name)! : []

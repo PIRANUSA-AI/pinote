@@ -1,12 +1,20 @@
 import { readConfig } from './config.js'
-import { applyMeetEvent, applyUtterance, nativeTranscript } from './meetTranscript.js'
+import './languageDetect.js'
+import { applyMeetEvent, applyUtterance, claimSelfVoice, nativeTranscript } from './meetTranscript.js'
 
 const ACTIVE_STATUSES = ['starting', 'recording', 'uploading', 'uploadFailed']
 const MENU_ID = 'mulaiRekapin'
 const SPEAKER_MEMORY_MS = 10 * 60 * 1000
 const SPEAKER_TAIL_MS = 1200
 const MERGE_WINDOW_MS = 4000
-const MEETING_PATTERNS = ['https://meet.google.com/*', 'https://*.zoom.us/*', 'https://web.whatsapp.com/*']
+const SELF_VOICE_ERROR_MS = 15000
+const SELF_VOICE_RECENT_MS = 15000
+const VOICE_MIN_CONFIDENCE = 0.8
+const VOICE_SCRIPT_CONFIDENCE = 0.9
+const VOICE_MIN_TOKENS = 5
+const VOICE_EVIDENCE = 2
+const DISMISS_LANGUAGE_MS = 120000
+const MEETING_PATTERNS =['https://meet.google.com/*', 'https://*.zoom.us/*', 'https://web.whatsapp.com/*']
 
 const state = {
   status: 'idle',
@@ -34,6 +42,14 @@ const state = {
   utteranceMeeting: null,
   nativeSequence: 0,
   nativeError: null,
+  language: null,
+  meetSelfId: null,
+  meetSelfName: null,
+  selfSuppressed: [],
+  selfVoiceAt: null,
+  voiceLanguages: {},
+  languageSuggestion: null,
+  dismissedLanguages: {},
 }
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
@@ -211,6 +227,15 @@ function reset() {
   state.captionsOn = null
   state.attendance = []
   state.utteranceStart = null
+  state.language = null
+  state.meetSelfId = null
+  state.meetSelfName = null
+  state.olderDrops = 0
+  state.selfSuppressed = []
+  state.selfVoiceAt = null
+  state.voiceLanguages = {}
+  state.languageSuggestion = null
+  state.dismissedLanguages = {}
 }
 
 async function ensureOffscreen() {
@@ -254,6 +279,8 @@ async function startRecording(tabId, language, source, mode, skipInsights) {
   state.tabId = tabId
   state.source = source ?? 'upload'
   state.sessionId = crypto.randomUUID()
+  state.language = typeof language === 'string' ? language : null
+  state.meetSelfName = selfName
   broadcast()
 
   try {
@@ -277,7 +304,7 @@ async function startRecording(tabId, language, source, mode, skipInsights) {
     state.startedAt = Date.now()
     broadcast()
     if (state.source === 'meet') {
-      const native = await chrome.tabs.sendMessage(tabId, { target: 'meetBridge', type: 'start', session: state.sessionId })
+      const native = await chrome.tabs.sendMessage(tabId, { target: 'meetBridge', type: 'start', session: state.sessionId, language: state.language })
         .catch(() => ({ ok: false, error: 'Muat ulang tab Meet setelah memperbarui extension, lalu mulai lagi.' }))
       if (!native?.ok) throw new Error(native?.error || 'Koneksi transkrip native Meet belum siap.')
       state.watcherOn = true
@@ -363,7 +390,7 @@ async function setPaused(paused) {
   if (state.source === 'meet') {
     if (paused) await chrome.tabs.sendMessage(state.tabId, { target: 'meetBridge', type: 'stop' }).catch(() => {})
     else {
-      const resumed = await chrome.tabs.sendMessage(state.tabId, { target: 'meetBridge', type: 'start', session: state.sessionId }).catch(() => null)
+      const resumed = await chrome.tabs.sendMessage(state.tabId, { target: 'meetBridge', type: 'start', session: state.sessionId, language: state.language }).catch(() => null)
       if (!resumed?.ok) { state.error = 'Transkrip Meet belum tersambung kembali. Hentikan sesi, lalu muat ulang tab Meet.'; broadcast() }
     }
   }
@@ -438,12 +465,17 @@ async function discardUpload() {
 
 function handleOffscreenEvent(message) {
   if (message.type === 'laneStats') {
+    const errors = finiteOrZero(message.errors)
+    const previous = state.laneStats
     state.laneStats = {
       sockets: finiteOrZero(message.sockets),
       finals: finiteOrZero(message.finals),
-      errors: finiteOrZero(message.errors),
+      errors,
       lastError: typeof message.lastError === 'string' ? message.lastError.slice(0, 120) : '',
+      errorAt: previous && errors > previous.errors ? Date.now() : previous?.errorAt ?? null,
     }
+  } else if (message.type === 'languageProbe') {
+    if (state.source !== 'meet' || state.status !== 'recording' || !probeLanguage(message.text, message.source)) return
   } else if (message.type === 'lanePartial') {
     if (state.source !== 'meet' || typeof message.text !== 'string') return
     state.partial = message.text.slice(0, 2000)
@@ -451,12 +483,18 @@ function handleOffscreenEvent(message) {
     if (state.source !== 'meet' || state.status !== 'recording') return
     clearLiveError()
     const local = message.participantId === 'local'
+    if (local && typeof message.text === 'string') {
+      state.selfVoiceAt = Date.now()
+      claimSelfVoice(state, message.text, message.startedAt)
+    }
+    const selfId = local && typeof state.meetSelfId === 'string' ? state.meetSelfId : null
     if (!applyMeetEvent(state, {
       event: 'laneFinal',
-      participantId: message.participantId,
-      name: local ? selfName : undefined,
+      participantId: selfId ?? message.participantId,
+      name: local && !selfId ? selfName : undefined,
       text: message.text,
       startedAt: message.startedAt,
+      voice: local,
     })) return
     if (state.error && state.error === state.nativeError) {
       state.error = null
@@ -557,22 +595,78 @@ function finiteOrZero(value) {
 function applyMeetStats(raw) {
   if (!raw || typeof raw !== 'object') return
   const next = {
-    receivers: finiteOrZero(raw.receivers),
-    lanes: finiteOrZero(raw.lanes),
-    localLanes: finiteOrZero(raw.localLanes),
-    frames: finiteOrZero(raw.frames),
-    chunks: finiteOrZero(raw.chunks),
+    peers: finiteOrZero(raw.peers),
+    channels: finiteOrZero(raw.channels),
+    mediaSession: raw.mediaSession === true,
+    packets: finiteOrZero(raw.packets),
+    control: finiteOrZero(raw.control),
+    captions: finiteOrZero(raw.captions),
+    chats: finiteOrZero(raw.chats),
+    rejected: finiteOrZero(raw.rejected),
+    reason: typeof raw.reason === 'string' ? raw.reason.slice(0, 40) : '',
     sent: finiteOrZero(raw.sent),
-    maxRms: finiteOrZero(raw.maxRms),
-    maxLevel: finiteOrZero(raw.maxLevel),
-    owners: finiteOrZero(raw.owners),
-    mapped: finiteOrZero(raw.mapped),
-    format: typeof raw.format === 'string' ? raw.format.slice(0, 60) : '',
-    error: typeof raw.error === 'string' ? raw.error.slice(0, 120) : '',
+    recoveries: finiteOrZero(raw.recoveries),
+    languageSends: finiteOrZero(raw.languageSends),
+    languageSwitches: finiteOrZero(raw.languageSwitches),
+    autoLanguage: raw.autoLanguage === true,
+    languageReason: typeof raw.languageReason === 'string' ? raw.languageReason.slice(0, 20) : '',
     localMic: raw.localMic === true,
+    localVoice: raw.localVoice === true,
+    localChunks: finiteOrZero(raw.localChunks),
+    ackLagMs: finiteOrZero(raw.ackLagMs),
+    revisions: finiteOrZero(raw.revisions),
+    language: typeof raw.language === 'string' ? raw.language.slice(0, 32) : '',
+    meetLanguage: typeof raw.meetLanguage === 'string' ? raw.meetLanguage.slice(0, 32) : '',
+    languageState: typeof raw.languageState === 'string' ? raw.languageState.slice(0, 32) : '',
+    mediaSessionId: raw.mediaSessionId === true,
+    selfDevice: raw.selfDevice === true,
+    error: typeof raw.error === 'string' ? raw.error.slice(0, 120) : '',
   }
   state.meetStats = next
+  if (state.languageSuggestion?.code === next.language) state.languageSuggestion = null
   broadcast()
+}
+
+const LANGUAGE_CODE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/
+
+function offerLanguage(code, source) {
+  if (typeof code !== 'string' || !LANGUAGE_CODE.test(code)) return false
+  if (state.source !== 'meet' || state.status !== 'recording' || !state.meetStats?.autoLanguage) return false
+  if (code === state.meetStats.language || state.languageSuggestion?.code === code) return false
+  const dismissedAt = state.dismissedLanguages?.[code]
+  if (dismissedAt && Date.now() - dismissedAt < DISMISS_LANGUAGE_MS) return false
+  state.languageSuggestion = { code, source, at: Date.now() }
+  return true
+}
+
+function probeLanguage(text, source) {
+  const detect = globalThis.RekapinLanguage?.detect
+  if (typeof detect !== 'function' || typeof text !== 'string') return false
+  const origin = source === 'participants' ? 'participants' : 'voice'
+  const result = detect(text)
+  if (!result?.code) return false
+  const strong = result.script && result.confidence >= VOICE_SCRIPT_CONFIDENCE
+  if (!strong && (result.confidence < VOICE_MIN_CONFIDENCE || result.tokens < VOICE_MIN_TOKENS)) return false
+  const evidence = state.voiceLanguages ?? {}
+  const recent = [...(evidence[origin] ?? []), result.code].slice(-VOICE_EVIDENCE)
+  state.voiceLanguages = { ...evidence, [origin]: recent }
+  if (recent.length < VOICE_EVIDENCE || recent.some((code) => code !== result.code)) return false
+  return offerLanguage(result.code, origin)
+}
+
+function selfVoiceHealthy(now = Date.now()) {
+  const errorAt = state.laneStats?.errorAt
+  if (errorAt && now - errorAt < SELF_VOICE_ERROR_MS) return false
+  return Boolean(state.meetStats?.localMic) || Boolean(state.selfVoiceAt && now - state.selfVoiceAt < SELF_VOICE_RECENT_MS)
+}
+
+function deepgramCoversSelf(utterance) {
+  if (!utterance || utterance.kind === 'chat') return false
+  const participantId = typeof utterance.participantId === 'string' ? utterance.participantId : utterance.deviceId
+  if (state.selfSuppressed?.includes(`${participantId}|${utterance.eventId}`)) return true
+  const selfId = state.meetSelfId
+  if (!selfId || participantId !== selfId) return false
+  return selfVoiceHealthy()
 }
 
 async function handleServiceMessage(message, sender) {
@@ -588,6 +682,7 @@ async function handleServiceMessage(message, sender) {
       if (!Array.isArray(message.utterances)) return { ok: false }
       let changed = false
       for (const utterance of message.utterances.slice(0, 200)) {
+        if (deepgramCoversSelf(utterance)) continue
         if (applyUtterance(state, utterance)) changed = true
       }
       if (changed) {
@@ -597,10 +692,25 @@ async function handleServiceMessage(message, sender) {
         }
         broadcast()
       }
+    } else if (message.event === 'languageSuggestion') {
+      if (offerLanguage(message.code, message.reason === 'memory' ? 'memory' : 'captions')) broadcast()
     } else if (['roster', 'devices'].includes(message.event) && applyMeetEvent(state, message)) {
       broadcast()
     }
     return { ok: true }
+  }
+  if (message.type === 'switchLanguage' || message.type === 'dismissLanguage') {
+    if (sender?.tab || typeof message.code !== 'string' || !LANGUAGE_CODE.test(message.code)) return { ok: false }
+    if (state.source !== 'meet' || state.status !== 'recording') return { ok: false }
+    if (state.languageSuggestion?.code === message.code) state.languageSuggestion = null
+    if (message.type === 'dismissLanguage') {
+      state.dismissedLanguages = { ...(state.dismissedLanguages ?? {}), [message.code]: Date.now() }
+      broadcast()
+      return { ok: true }
+    }
+    const reply = await chrome.tabs.sendMessage(state.tabId, { target: 'meetBridge', type: 'switchLanguage', code: message.code }).catch(() => null)
+    broadcast()
+    return { ok: Boolean(reply?.ok) }
   }
   if (['speaker', 'roster', 'watcher', 'captions'].includes(message.type)
     && (sender?.tab?.id !== state.tabId || state.source === 'meet' || state.status !== 'recording' || state.paused)) return { ok: false }
