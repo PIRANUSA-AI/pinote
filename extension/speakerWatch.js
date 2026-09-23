@@ -155,7 +155,23 @@ function tryEnableCaptions() {
 }
 
 function send(payload) {
-  chrome.runtime.sendMessage({ target: 'service', ...payload }).catch(() => {})
+  let alive = false
+  try {
+    alive = Boolean(chrome.runtime?.id)
+  } catch {
+    alive = false
+  }
+  if (!alive) {
+    clearInterval(timer)
+    timer = null
+    return
+  }
+  try {
+    chrome.runtime.sendMessage({ target: 'service', ...payload }).catch(() => {})
+  } catch {
+    clearInterval(timer)
+    timer = null
+  }
 }
 
 function tick() {

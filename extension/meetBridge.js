@@ -7,9 +7,54 @@
   let draining = null
   let pendingStart = null
   let startTimer = null
+  let alive = true
 
-  const send = (payload) => chrome.runtime.sendMessage({ target: 'service', type: 'meetNative', session, ...payload }).catch(() => {})
   const control = (type, id = session) => window.postMessage({ bridge: 'rekapin-meet-control-v1', type, session: id }, location.origin)
+
+  function contextAlive() {
+    try {
+      return Boolean(chrome.runtime?.id)
+    } catch {
+      return false
+    }
+  }
+
+  function shutdown() {
+    if (!alive) return
+    alive = false
+    clearTimeout(startTimer)
+    startTimer = null
+    if (session) control('stop', session)
+    if (draining) control('stop', draining.session)
+    session = null
+    port = null
+    draining = null
+    pendingStart = null
+  }
+
+  function send(payload) {
+    if (!alive) return
+    if (!contextAlive()) {
+      shutdown()
+      return
+    }
+    try {
+      chrome.runtime.sendMessage({ target: 'service', type: 'meetNative', session, ...payload }).catch(() => {})
+    } catch {
+      shutdown()
+    }
+  }
+
+  function post(target, message) {
+    try {
+      target.postMessage(message)
+      return true
+    } catch {
+      if (!contextAlive()) shutdown()
+      else if (port === target) port = null
+      return false
+    }
+  }
 
   function toBase64(buffer) {
     const bytes = new Uint8Array(buffer)
@@ -23,6 +68,7 @@
       port = chrome.runtime.connect({ name: PORT_NAME })
     } catch {
       port = null
+      if (!contextAlive()) shutdown()
       return
     }
     const opened = port
@@ -50,12 +96,12 @@
   function forwardAudio(target, data) {
     if (!target || !Number.isSafeInteger(data.lane)) return
     if (data.type === 'laneFlush') {
-      target.postMessage({ type: 'laneFlush', lane: data.lane })
+      post(target, { type: 'laneFlush', lane: data.lane })
       return
     }
     if (Object.prototype.toString.call(data.pcm) !== '[object ArrayBuffer]') return
     if (data.pcm.byteLength === 0 || data.pcm.byteLength > MAX_CHUNK_BYTES) return
-    target.postMessage({
+    post(target, {
       type: 'lane',
       lane: data.lane,
       owner: typeof data.owner === 'string' ? data.owner.slice(0, 512) : null,
@@ -66,7 +112,13 @@
 
   window.addEventListener('message', (event) => {
     const data = event.data
+    if (!alive) return
     if (event.source !== window || event.origin !== location.origin || data?.bridge !== 'rekapin-meet-v1') return
+    if (!contextAlive()) {
+      if (data.session) control('stop', data.session)
+      shutdown()
+      return
+    }
     const active = Boolean(session) && data.session === session
     const drainingPort = draining && data.session === draining.session ? draining.port : null
     if (!active && !drainingPort) return

@@ -2,6 +2,9 @@
 
 Tulis rilis terbaru paling atas. Setiap rilis diawali baris `## versi · tanggal`, lalu setiap perubahan diawali `* `.
 
+## 0.10.3 · 23 September 2026
+* Memperbarui extension saat tab Meet masih terbuka tidak lagi memunculkan error berulang. Tab lama berhenti dengan rapi sampai dimuat ulang
+
 ## 0.10.2 · 23 September 2026
 * Di Google Meet, suaramu diambil dari audio yang benar benar dikirim Meet, bukan dari mikrofon laptop. Kalau kamu mute di Meet, suaramu tidak ikut tercatat
 * Suara peserta lain yang keluar dari speaker tidak lagi tercatat atas namamu

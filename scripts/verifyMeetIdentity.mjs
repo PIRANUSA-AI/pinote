@@ -215,6 +215,7 @@ const bridge = vm.createContext({
   btoa,
   chrome: {
     runtime: {
+      id: 'cncnbeehgiacjoimfoapiijccfifcoha',
       sendMessage: async () => {},
       connect: () => port,
       onMessage: { addListener: (fn) => { bridgeHandler = fn } },
@@ -256,6 +257,16 @@ bridgeHandler({ target: 'meetBridge', type: 'start', session: 'b3' }, {}, (r) =>
 fromPage({ session: 'b3', type: 'ready', peers: 1, processor: true })
 storageHandler({ liveState: { newValue: { status: 'recording', sessionId: 'b3', paused: true } } }, 'local')
 assert.equal(controls.at(-1).type, 'stop', 'Pause stops the page hook')
+
+bridgeHandler({ target: 'meetBridge', type: 'start', session: 'b4' }, {}, (r) => responses.push(r))
+fromPage({ session: 'b4', type: 'ready', peers: 1, processor: true })
+bridge.chrome.runtime.id = undefined
+bridge.chrome.runtime.sendMessage = () => { throw new Error('Extension context invalidated.') }
+assert.doesNotThrow(() => fromPage({ session: 'b4', type: 'stats', stats: { frames: 1 } }), 'An invalidated extension never throws inside Meet')
+assert.equal(controls.at(-1).type, 'stop', 'An invalidated extension stops the page hook')
+const beforeDead = controls.length
+assert.doesNotThrow(() => fromPage({ session: 'b4', type: 'stats', stats: { frames: 2 } }))
+assert.equal(controls.length, beforeDead, 'After shutdown the bridge stays silent')
 
 const noopEvent = { addListener() {} }
 const service = vm.createContext({
