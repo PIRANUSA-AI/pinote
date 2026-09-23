@@ -1,5 +1,6 @@
 import { readConfig } from './config.js'
 import { combineLines } from './transcriptBlocks.js'
+import { talkTime } from './talkTime.js'
 
 const el = (id) => document.getElementById(id)
 const LANGUAGE_NAMES = {
@@ -422,6 +423,42 @@ function bgUploadText(bg) {
   return bg.message || 'Rekaman sebelumnya belum terkirim'
 }
 
+let talkKey = ''
+
+function formatTalk(seconds) {
+  const minutes = Math.floor(seconds / 60)
+  return minutes > 0 ? `${minutes}m ${seconds % 60}d` : `${seconds}d`
+}
+
+function renderTalkTime(items) {
+  const row = el('talkRow')
+  const key = JSON.stringify(items)
+  if (key === talkKey) return
+  talkKey = key
+  row.textContent = ''
+  const visible = items.length > 1
+  show(row, visible)
+  if (!visible) return
+  for (const item of items) {
+    const entry = document.createElement('div')
+    entry.className = 'talkItem'
+    const name = document.createElement('span')
+    name.className = 'talkName'
+    name.textContent = item.name
+    const meta = document.createElement('span')
+    meta.className = 'talkMeta'
+    meta.textContent = `${formatTalk(item.seconds)} · ${item.share}%`
+    const bar = document.createElement('div')
+    bar.className = 'talkBar'
+    const fill = document.createElement('div')
+    fill.className = 'talkFill'
+    fill.style.width = `${item.share}%`
+    bar.appendChild(fill)
+    entry.append(name, meta, bar)
+    row.appendChild(entry)
+  }
+}
+
 function renderControls(state) {
   const recording = state.status === 'recording' || state.status === 'starting'
   const uploading = state.status === 'uploading'
@@ -447,12 +484,12 @@ function renderControls(state) {
   show(el('watcherHint'), recording && onMeet && !state.watcherOn)
   if (attendance.length > 0) el('attendanceRow').textContent = `Hadir: ${attendance.join(', ')}`
   show(el('attendanceRow'), recording && attendance.length > 0)
+  renderTalkTime(recording ? talkTime(state.lines) : [])
   const active = onMeet ? state.meetStats?.language : ''
   if (active) {
     const name = LANGUAGE_NAMES[active] ?? active
     const mode = state.meetStats.autoLanguage ? ' · otomatis' : ''
-    const mic = state.meetStats.localMic ? ' · suara kamu lewat Deepgram' : ''
-    el('languageRow').textContent = `Bahasa caption: ${name}${mode}${mic}`
+    el('languageRow').textContent = `Bahasa transkrip: ${name}${mode}`
   }
   show(el('languageRow'), recording && Boolean(active))
   const offer = recording && onMeet ? state.languageSuggestion : null

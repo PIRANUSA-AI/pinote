@@ -3,6 +3,7 @@ import type { Duplex } from 'node:stream'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type { User } from '../db/schema.js'
 import { findSession } from '../services/auth.js'
+import { publicError } from './publicError.js'
 import { DeepgramLiveSession } from '../services/deepgramLive.js'
 import { QwenRealtimeSession } from '../services/qwenRealtime.js'
 import { LIVE_SAMPLE_RATE, OpenAiRealtimeSession, type LiveTranscriptionHandlers } from '../services/openaiRealtime.js'
@@ -102,7 +103,10 @@ function handleConnection(ws: WebSocket, user: User): void {
       onReady: () => send({ type: 'ready' }),
       onPartial: (text, tag) => send({ type: 'partial', text, tag }),
       onFinal: (text, tag) => send({ type: 'final', text, tag }),
-      onError: (message) => send({ type: 'error', message }),
+      onError: (message) => {
+        console.warn(`Live session for ${user.id} upstream error:`, message)
+        send({ type: 'error', message: publicError(message, 'Layanan transkrip langsung sedang bermasalah. Rekaman tetap berjalan.') })
+      },
       onClose: () => send({ type: 'upstreamClosed' }),
     }, sampleRate, engine)
     session.connect()

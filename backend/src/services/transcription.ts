@@ -9,6 +9,7 @@ import { cacheJobStatus, invalidateUserStats } from './cache.js'
 import { createDownloadUrl } from './storage.js'
 import { sendTaskDigest } from './email.js'
 import { nativeSegments } from '../lib/nativeTranscript.js'
+import { publicError } from '../lib/publicError.js'
 
 const TRANSCRIPTION_URL_TTL_SEC = 4 * 60 * 60
 
@@ -45,7 +46,7 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
     const audioUrl = await createDownloadUrl(job.storageKey, TRANSCRIPTION_URL_TTL_SEC)
 
     if (job.nativeTranscript !== null && job.nativeTranscript.length === 0) {
-      throw new Error('Tidak ada transkrip native Meet yang tertangkap. Rekaman tersimpan, tetapi identitas pembicara tidak akan ditebak.')
+      throw new Error('Tidak ada transkrip Meet yang tertangkap. Rekaman tersimpan, tetapi identitas pembicara tidak akan ditebak.')
     }
     const { segments, detectedLanguage, durationSec: actualDuration } = job.nativeTranscript !== null ? {
       segments: nativeSegments(job.nativeTranscript),
@@ -275,7 +276,7 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
         console.error(`[${jobId}] Background processing failed:`, bgMsg)
         await db
           .update(jobs)
-          .set({ errorMessage: `Peringatan: ${bgMsg}` })
+          .set({ errorMessage: `Peringatan: ${publicError(bgMsg, 'ringkasan dan tugas belum berhasil dibuat.')}` })
           .where(eq(jobs.id, jobId))
       }
     })()
@@ -291,7 +292,7 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
       return
     }
 
-    const msg = err instanceof Error ? err.message : String(err)
+    const msg = publicError(err instanceof Error ? err.message : String(err), 'Transkripsi gagal diproses. Coba kirim ulang rekamannya.')
     console.error(`[${jobId}] Transcription failed`, err)
 
     await Promise.all([

@@ -809,6 +809,44 @@ mark {
   line-height: 1.5;
 }
 
+.talkRow {
+  display: grid;
+  gap: 5px;
+}
+
+.talkItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  font-size: 11.5px;
+  color: var(--ink);
+}
+
+.talkName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.talkMeta {
+  color: var(--inkMuted);
+  font-variant-numeric: tabular-nums;
+}
+
+.talkBar {
+  grid-column: 1 / -1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--brandSoft);
+  overflow: hidden;
+}
+
+.talkFill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--brand);
+}
+
 .errorBox {
   padding: 9px 11px;
   border-radius: 11px;

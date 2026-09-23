@@ -204,7 +204,7 @@
     control('start', session, typeof message.language === 'string' ? message.language.slice(0, 16) : undefined)
     startTimer = setTimeout(() => {
       if (!pendingStart) return
-      pendingStart({ ok: false, error: 'Hook Meet belum terpasang. Muat ulang tab Meet setelah memperbarui extension.' })
+      pendingStart({ ok: false, error: 'Rekapin belum siap di tab Meet ini. Muat ulang tab Meet setelah memperbarui extension.' })
       pendingStart = null
       stop()
     }, 2000)

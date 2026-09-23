@@ -562,7 +562,7 @@ async function createJob(job) {
   }
   const result = await response.json()
   if (job.nativeTranscript !== undefined && result.transcriptSource !== 'meet-native') {
-    throw permanentError('Backend belum mendukung transkrip native Meet. Perbarui backend sebelum mengirim ulang; rekaman tetap tersedia di sesi ini.')
+    throw permanentError('Server Rekapin perlu diperbarui sebelum rekaman ini bisa dikirim. Rekaman tetap tersimpan di sesi ini.')
   }
   return result
 }

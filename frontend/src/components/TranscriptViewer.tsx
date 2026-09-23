@@ -158,7 +158,7 @@ export function TranscriptViewer({
                   ? 'bg-slate-200 text-ink'
                   : 'bg-navy text-white'
               }`}
-              title={showRaw ? 'Lihat transkrip yang sudah diperbaiki' : 'Lihat transkrip mentah Deepgram'}
+              title={showRaw ? 'Lihat transkrip yang sudah diperbaiki' : 'Lihat transkrip mentah'}
             >
               {showRaw ? 'Mentah' : 'Dipoles'}
             </button>

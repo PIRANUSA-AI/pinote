@@ -192,7 +192,18 @@ async function restoreState() {
 
 const ready = restoreState()
 
+const BROADCAST_MS = 300
+const FREQUENT_EVENTS = new Set(['laneStats', 'languageProbe', 'lanePartial', 'laneFinal', 'livePartial', 'liveFinal'])
+let broadcastTimer = null
+
+function broadcastSoon() {
+  if (broadcastTimer) return
+  broadcastTimer = setTimeout(broadcast, BROADCAST_MS)
+}
+
 function broadcast() {
+  clearTimeout(broadcastTimer)
+  broadcastTimer = null
   const snapshot = { ...state }
   chrome.runtime.sendMessage({ target: 'panel', type: 'state', state: snapshot }).catch(() => {})
   chrome.storage.local.set({ liveState: snapshot }).catch(() => {})
@@ -306,7 +317,7 @@ async function startRecording(tabId, language, source, mode, skipInsights) {
     if (state.source === 'meet') {
       const native = await chrome.tabs.sendMessage(tabId, { target: 'meetBridge', type: 'start', session: state.sessionId, language: state.language })
         .catch(() => ({ ok: false, error: 'Muat ulang tab Meet setelah memperbarui extension, lalu mulai lagi.' }))
-      if (!native?.ok) throw new Error(native?.error || 'Koneksi transkrip native Meet belum siap.')
+      if (!native?.ok) throw new Error(native?.error || 'Transkrip Meet belum siap. Muat ulang tab Meet, lalu mulai lagi.')
       state.watcherOn = true
       broadcast()
     } else void ensureWatcher(tabId)
@@ -585,7 +596,8 @@ function handleOffscreenEvent(message) {
   } else {
     return
   }
-  broadcast()
+  if (FREQUENT_EVENTS.has(message.type)) broadcastSoon()
+  else broadcast()
 }
 
 function finiteOrZero(value) {
@@ -624,7 +636,7 @@ function applyMeetStats(raw) {
   }
   state.meetStats = next
   if (state.languageSuggestion?.code === next.language) state.languageSuggestion = null
-  broadcast()
+  broadcastSoon()
 }
 
 const LANGUAGE_CODE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/
@@ -690,12 +702,12 @@ async function handleServiceMessage(message, sender) {
           state.error = null
           state.nativeError = null
         }
-        broadcast()
+        broadcastSoon()
       }
     } else if (message.event === 'languageSuggestion') {
       if (offerLanguage(message.code, message.reason === 'memory' ? 'memory' : 'captions')) broadcast()
     } else if (['roster', 'devices'].includes(message.event) && applyMeetEvent(state, message)) {
-      broadcast()
+      broadcastSoon()
     }
     return { ok: true }
   }

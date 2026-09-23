@@ -442,7 +442,7 @@ assert.equal(controls.length, beforeDead, 'After shutdown the bridge stays silen
 
 const noopEvent = { addListener() {} }
 const service = vm.createContext({
-  applyMeetEvent, claimSelfVoice, nativeTranscript, Date, URL, crypto: globalThis.crypto,
+  applyMeetEvent, claimSelfVoice, nativeTranscript, Date, URL, crypto: globalThis.crypto, setTimeout, clearTimeout,
   chrome: {
     sidePanel: { setPanelBehavior: async () => {} },
     storage: { local: { remove: async () => {}, get: async () => ({}), set: async () => {} }, onChanged: noopEvent },
