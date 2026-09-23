@@ -2,6 +2,7 @@
   const PORT_NAME = 'rekapinMeetAudio'
   const DRAIN_MS = 1500
   const MAX_CHUNK_BYTES = 64000
+  const MAX_UTTERANCES = 200
   let session = null
   let port = null
   let draining = null
@@ -53,6 +54,24 @@
       if (!contextAlive()) shutdown()
       else if (port === target) port = null
       return false
+    }
+  }
+
+  function utteranceFields(item) {
+    if (!item || typeof item !== 'object') return null
+    const text = (value, limit) => typeof value === 'string' ? value.slice(0, limit) : undefined
+    return {
+      source: text(item.source, 32),
+      meetingId: text(item.meetingId, 128),
+      eventId: text(item.eventId, 20),
+      version: text(item.version, 20),
+      deviceId: text(item.deviceId, 512),
+      participantId: text(item.participantId, 512),
+      speakerName: text(item.speakerName, 120),
+      text: text(item.text, 10000),
+      language: text(item.language, 32),
+      isFinal: item.isFinal === true,
+      timestamp: Number.isFinite(item.timestamp) ? item.timestamp : undefined,
     }
   }
 
@@ -144,6 +163,8 @@
 
     if (['roster', 'devices', 'error', 'stats'].includes(data.type)) {
       send({ event: data.type, users: data.users, devices: data.devices, message: data.message, stats: data.stats })
+    } else if (data.type === 'utterances' && Array.isArray(data.utterances)) {
+      send({ event: 'utterances', utterances: data.utterances.slice(0, MAX_UTTERANCES).map(utteranceFields).filter(Boolean) })
     }
   })
 

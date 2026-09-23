@@ -94,10 +94,14 @@
     for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length }
     return result
   }
+  const gzipAt = (bytes, at) => bytes.length > at + 2 && bytes[at] === 31 && bytes[at + 1] === 139 && bytes[at + 2] === 8
   async function packet(data, compressed = false) {
     const blob = data instanceof Blob ? data : new Blob([data])
     if (blob.size > LIMIT) throw new Error('Packet too large')
     if (!compressed) return new Uint8Array(await blob.arrayBuffer())
+    const head = new Uint8Array(await blob.slice(0, 6).arrayBuffer())
+    if (gzipAt(head, 0)) return expand(blob, 'gzip')
+    if (gzipAt(head, 3)) return expand(blob.slice(3), 'gzip')
     for (const format of ['deflate', 'deflate-raw', 'gzip']) {
       try { return await expand(blob, format) } catch (err) {
         if (err?.message === 'Expanded packet too large') throw err
@@ -105,5 +109,98 @@
     }
     return new Uint8Array(await blob.arrayBuffer())
   }
-  globalThis.RekapinMeetProtocol = Object.freeze({ roster, devices, packet })
+  async function unwrap(bytes) {
+    if (!(bytes instanceof Uint8Array) || bytes.length > LIMIT) throw new Error('Invalid packet')
+    if (gzipAt(bytes, 0)) return expand(new Blob([bytes]), 'gzip')
+    if (gzipAt(bytes, 3)) return expand(new Blob([bytes.subarray(3)]), 'gzip')
+    return bytes
+  }
+
+  const DIGITS = /^\d{1,20}$/
+  const counter = (value) => typeof value === 'string' && DIGITS.test(value) && value !== '0'
+  function captionV2(bytes) {
+    let root
+    try { root = fields(bytes) } catch { return { kind: 'rejected', reason: 'decode' } }
+    const utterance = nested(root, 1)
+    if (!utterance.size) return { kind: 'rejected', reason: 'noUtterance' }
+    const caption = nested(utterance, 3)
+    const deviceId = str(caption, 6)
+    if (!deviceId || deviceId.length > 512) return { kind: 'rejected', reason: 'noDevice' }
+    const utteranceId = num(utterance, 1)
+    if (!counter(utteranceId)) return { kind: 'rejected', reason: 'noUtteranceId' }
+    const version = num(utterance, 2) ?? '0'
+    if (!DIGITS.test(version)) return { kind: 'rejected', reason: 'badVersion' }
+    return { kind: 'caption', utteranceId, version, deviceId, text: str(caption, 3), language: str(caption, 4).slice(0, 32) }
+  }
+  function captionLegacy(bytes) {
+    let root
+    try { root = fields(bytes) } catch { return { kind: 'rejected', reason: 'decode' } }
+    if (root.get(2)?.some((f) => f.wire === 2)) return { kind: 'control' }
+    const message = nested(root, 1)
+    if (!message.size) return { kind: 'rejected', reason: 'noMessage' }
+    const deviceId = str(message, 1)
+    const utteranceId = num(message, 2)
+    const version = num(message, 3)
+    if (!deviceId || deviceId.length > 512) return { kind: 'rejected', reason: 'noDevice' }
+    if (!counter(utteranceId)) return { kind: 'rejected', reason: 'noUtteranceId' }
+    if (!counter(version)) return { kind: 'rejected', reason: 'badVersion' }
+    if (num(message, 8) === undefined) return { kind: 'rejected', reason: 'noLanguage' }
+    return { kind: 'caption', utteranceId, version, deviceId, text: str(message, 6), language: '' }
+  }
+
+  let encoder = null
+  function varint(value) {
+    let n = BigInt(value)
+    if (n < 0n) n += 1n << 64n
+    const out = []
+    do {
+      let b = Number(n & 127n)
+      n >>= 7n
+      if (n) b |= 128
+      out.push(b)
+    } while (n)
+    return out
+  }
+  const numberField = (id, value) => [...varint(id * 8), ...varint(value)]
+  const blockField = (id, bytes) => [...varint(id * 8 + 2), ...varint(bytes.length), ...bytes]
+  const textField = (id, text) => blockField(id, [...(encoder ??= new TextEncoder()).encode(text)])
+  function captionAck(utteranceId, version) {
+    return Uint8Array.from(blockField(1, blockField(1, [...numberField(1, utteranceId), ...numberField(2, version), ...numberField(3, 1)])))
+  }
+  function languageCommand(op, code) {
+    const config = blockField(9, [...textField(1, code), ...textField(2, code)])
+    const update = [...blockField(1, config), ...blockField(2, textField(1, 'client_config.caption_config'))]
+    return Uint8Array.from(blockField(1, blockField(2, [...numberField(1, op), ...blockField(3, update)])))
+  }
+  function languageAck(seq) {
+    return Uint8Array.from(blockField(1, blockField(1, [...numberField(2, seq), ...numberField(3, 1)])))
+  }
+  function outgoingOp(bytes) {
+    try {
+      const op = num(nested(fields(bytes), 1, 2), 1)
+      return op === undefined ? undefined : Number(op)
+    } catch { return undefined }
+  }
+  function outgoingAck(bytes) {
+    try {
+      const ack = nested(fields(bytes), 1, 1)
+      const seq = num(ack, 2)
+      return seq === undefined || num(ack, 3) === undefined ? undefined : Number(seq)
+    } catch { return undefined }
+  }
+  function skeleton(bytes, depth = 0) {
+    let map
+    try { map = fields(bytes) } catch { return `raw${bytes.length}` }
+    const parts = []
+    for (const [id, list] of [...map].sort((a, b) => a[0] - b[0])) {
+      for (const { wire, value } of list) {
+        if (wire !== 2) parts.push(`${id}:${wire === 0 ? 'v' : wire === 1 ? 'i64' : 'i32'}`)
+        else parts.push(depth < 2 && value.length ? `${id}{${skeleton(value, depth + 1)}}` : `${id}:len${value.length}`)
+      }
+    }
+    return parts.join(' ').slice(0, 240)
+  }
+  globalThis.RekapinMeetProtocol = Object.freeze({
+    roster, devices, packet, unwrap, captionV2, captionLegacy, captionAck, languageCommand, languageAck, outgoingOp, outgoingAck, skeleton,
+  })
 })()

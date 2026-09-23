@@ -93,6 +93,79 @@ export function applyMeetEvent(state, message) {
   return true
 }
 
+const COUNTER = /^\d{1,20}$/
+const RECENT_LINES = 500
+
+function sameOrNewer(next, prior) {
+  return BigInt(next) >= BigInt(prior)
+}
+
+export function applyUtterance(state, event) {
+  if (!event || typeof event !== 'object' || !state.startedAt) return false
+  if (typeof event.source !== 'string' || event.source !== state.source) return false
+  if (typeof event.meetingId !== 'string' || !event.meetingId || event.meetingId.length > 128) return false
+  if (state.utteranceMeeting && state.utteranceMeeting !== event.meetingId) return false
+  if (!COUNTER.test(event.eventId ?? '') || !COUNTER.test(event.version ?? '')) return false
+  const participantId = validId(event.participantId) ? event.participantId : validId(event.deviceId) ? event.deviceId : null
+  if (!participantId || typeof event.text !== 'string') return false
+  const text = event.text.trim()
+  if (!text || text.length > 10000) return false
+
+  const now = Date.now()
+  const at = Number.isFinite(event.timestamp) ? Math.min(event.timestamp, now) : now
+  const offset = (value) => Math.max(0, (value - state.startedAt - (state.pausedTotalMs ?? 0)) / 1000)
+  const key = `${participantId}|${event.eventId}`
+  const speakerName = typeof event.speakerName === 'string' ? event.speakerName.trim().slice(0, 120) : ''
+  const language = typeof event.language === 'string' ? event.language.slice(0, 32) : ''
+  state.utteranceMeeting ??= event.meetingId
+
+  for (let i = state.lines.length - 1; i >= Math.max(0, state.lines.length - RECENT_LINES); i--) {
+    const line = state.lines[i]
+    if (line.utteranceKey !== key || line.frozen) continue
+    if (!sameOrNewer(event.version, line.version)) return false
+    const final = line.final || event.isFinal === true
+    if (line.version === event.version && line.text === text && line.final === final) return false
+    line.text = text
+    line.version = event.version
+    line.final = final
+    line.endAt = Math.max(line.at, at)
+    line.endSec = Math.max(line.startSec, offset(line.endAt))
+    if (language) line.language = language
+    if (speakerName) {
+      line.fixedName = true
+      line.speaker = speakerName
+      line.identityResolved = true
+    } else resolveLine(state, line)
+    return true
+  }
+
+  if (state.lines.length >= MAX_LINES) {
+    state.error = 'Batas 20.000 potongan transkrip tercapai. Hentikan sesi dan mulai sesi baru.'
+    return true
+  }
+  const line = {
+    at,
+    endAt: at,
+    startSec: offset(at),
+    endSec: offset(at),
+    captionId: event.eventId,
+    version: event.version,
+    final: event.isFinal === true,
+    participantId,
+    provenance: 'meet-native',
+    utteranceKey: key,
+    language,
+    text,
+  }
+  if (speakerName) {
+    line.fixedName = true
+    line.speaker = speakerName
+    line.identityResolved = true
+  } else resolveLine(state, line)
+  state.lines.push(line)
+  return true
+}
+
 export function nativeTranscript(state) {
   return state.lines.filter((line) => line.provenance === 'meet-native' && line.text.trim()).map((line) => ({
     participantId: line.participantId,

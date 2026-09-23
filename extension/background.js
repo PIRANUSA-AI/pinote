@@ -1,5 +1,5 @@
 import { readConfig } from './config.js'
-import { applyMeetEvent, nativeTranscript } from './meetTranscript.js'
+import { applyMeetEvent, applyUtterance, nativeTranscript } from './meetTranscript.js'
 
 const ACTIVE_STATUSES = ['starting', 'recording', 'uploading', 'uploadFailed']
 const MENU_ID = 'mulaiRekapin'
@@ -31,6 +31,7 @@ const state = {
   sessionId: null,
   meetParticipants: {},
   meetStreams: {},
+  utteranceMeeting: null,
   nativeSequence: 0,
   nativeError: null,
 }
@@ -187,6 +188,7 @@ function reset() {
   state.sessionId = null
   state.meetParticipants = {}
   state.meetStreams = {}
+  state.utteranceMeeting = null
   state.nativeSequence = 0
   state.meetStats = null
   state.laneStats = null
@@ -582,6 +584,19 @@ async function handleServiceMessage(message, sender) {
       broadcast()
     } else if (message.event === 'stats') {
       applyMeetStats(message.stats)
+    } else if (message.event === 'utterances') {
+      if (!Array.isArray(message.utterances)) return { ok: false }
+      let changed = false
+      for (const utterance of message.utterances.slice(0, 200)) {
+        if (applyUtterance(state, utterance)) changed = true
+      }
+      if (changed) {
+        if (state.error && state.error === state.nativeError) {
+          state.error = null
+          state.nativeError = null
+        }
+        broadcast()
+      }
     } else if (['roster', 'devices'].includes(message.event) && applyMeetEvent(state, message)) {
       broadcast()
     }
