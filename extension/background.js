@@ -188,6 +188,8 @@ function reset() {
   state.meetParticipants = {}
   state.meetStreams = {}
   state.nativeSequence = 0
+  state.meetStats = null
+  state.laneStats = null
   state.nativeError = null
   state.watcherOn = false
   state.status = 'idle'
@@ -433,13 +435,27 @@ async function discardUpload() {
 }
 
 function handleOffscreenEvent(message) {
-  if (message.type === 'lanePartial') {
+  if (message.type === 'laneStats') {
+    state.laneStats = {
+      sockets: finiteOrZero(message.sockets),
+      finals: finiteOrZero(message.finals),
+      errors: finiteOrZero(message.errors),
+      lastError: typeof message.lastError === 'string' ? message.lastError.slice(0, 120) : '',
+    }
+  } else if (message.type === 'lanePartial') {
     if (state.source !== 'meet' || typeof message.text !== 'string') return
     state.partial = message.text.slice(0, 2000)
   } else if (message.type === 'laneFinal') {
     if (state.source !== 'meet' || state.status !== 'recording') return
     clearLiveError()
-    if (!applyMeetEvent(state, { event: 'laneFinal', participantId: message.participantId, text: message.text, startedAt: message.startedAt })) return
+    const local = message.participantId === 'local'
+    if (!applyMeetEvent(state, {
+      event: 'laneFinal',
+      participantId: message.participantId,
+      name: local ? selfName : undefined,
+      text: message.text,
+      startedAt: message.startedAt,
+    })) return
     if (state.error && state.error === state.nativeError) {
       state.error = null
       state.nativeError = null
@@ -447,12 +463,6 @@ function handleOffscreenEvent(message) {
   } else if (message.type === 'livePartial') {
     if (!state.partial) state.utteranceStart = Date.now()
     state.partial = message.text
-  } else if (message.type === 'liveFinal' && state.source === 'meet') {
-    clearLiveError()
-    const startedAt = state.utteranceStart ?? Date.now() - 4000
-    state.utteranceStart = null
-    if (state.status !== 'recording') return
-    if (!applyMeetEvent(state, { event: 'laneFinal', participantId: 'local', name: selfName, text: message.text, startedAt })) return
   } else if (message.type === 'liveFinal') {
     clearLiveError()
     const endedAt = Date.now()
@@ -538,6 +548,31 @@ function handleOffscreenEvent(message) {
   broadcast()
 }
 
+function finiteOrZero(value) {
+  return Number.isFinite(value) ? value : 0
+}
+
+function applyMeetStats(raw) {
+  if (!raw || typeof raw !== 'object') return
+  const next = {
+    receivers: finiteOrZero(raw.receivers),
+    lanes: finiteOrZero(raw.lanes),
+    localLanes: finiteOrZero(raw.localLanes),
+    frames: finiteOrZero(raw.frames),
+    chunks: finiteOrZero(raw.chunks),
+    sent: finiteOrZero(raw.sent),
+    maxRms: finiteOrZero(raw.maxRms),
+    maxLevel: finiteOrZero(raw.maxLevel),
+    owners: finiteOrZero(raw.owners),
+    mapped: finiteOrZero(raw.mapped),
+    format: typeof raw.format === 'string' ? raw.format.slice(0, 60) : '',
+    error: typeof raw.error === 'string' ? raw.error.slice(0, 120) : '',
+    localMic: raw.localMic === true,
+  }
+  state.meetStats = next
+  broadcast()
+}
+
 async function handleServiceMessage(message, sender) {
   if (message.type === 'meetNative') {
     if (sender?.tab?.id !== state.tabId || sender.frameId !== 0 || state.source !== 'meet' || state.status !== 'recording' || state.paused || message.session !== state.sessionId) return { ok: false }
@@ -545,6 +580,8 @@ async function handleServiceMessage(message, sender) {
       state.error = typeof message.message === 'string' ? message.message.slice(0, 300) : 'Data Meet belum tersedia.'
       state.nativeError = state.error
       broadcast()
+    } else if (message.event === 'stats') {
+      applyMeetStats(message.stats)
     } else if (['roster', 'devices'].includes(message.event) && applyMeetEvent(state, message)) {
       broadcast()
     }

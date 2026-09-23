@@ -366,6 +366,27 @@ function renderControls(state) {
   show(el('captionHint'), recording && onMeet && state.watcherOn)
   if (attendance.length > 0) el('attendanceRow').textContent = `Hadir: ${attendance.join(', ')}`
   show(el('attendanceRow'), recording && attendance.length > 0)
+
+  const diag = state.meetStats
+  if (diag) {
+    const lane = state.laneStats
+    const parts = [
+      `jalur peserta ${diag.lanes}`,
+      `jalur kamu ${diag.localLanes} ${diag.localMic ? 'aktif' : 'mute'}`,
+      `frame ${diag.frames}`,
+      `terkirim ${diag.sent}`,
+      `level ${diag.maxLevel}`,
+      `rms ${diag.maxRms}`,
+      `pemetaan ${diag.mapped}`,
+      `soket ${lane?.sockets ?? 0}`,
+      `hasil ${lane?.finals ?? 0}`,
+    ]
+    if (diag.format) parts.push(diag.format)
+    const problem = diag.error || lane?.lastError
+    if (problem) parts.push(`error ${problem}`)
+    el('diagRow').textContent = `Diagnostik: ${parts.join(' · ')}`
+  }
+  show(el('diagRow'), recording && onMeet && Boolean(diag))
   el('sheet').className = recording ? 'sheet compact' : 'sheet'
 
   if (recording) {

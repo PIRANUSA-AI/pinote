@@ -74,17 +74,20 @@ let clock = 1_000_000
 const listeners = new Map(), messages = []
 class Channel extends EventTarget { constructor(label) { super(); this.label = label } }
 function frame(value) {
-  return { numberOfFrames: 4800, sampleRate: 48000, copyTo: (dest) => dest.fill(value), close() {} }
+  return { numberOfFrames: 4800, sampleRate: 48000, loud: value !== 0, copyTo: (dest) => dest.fill(value), close() {} }
 }
 function fakeReceiver(frames) {
   let index = 0
   let cancelled = false
+  let level = 0
   const reader = {
     read: async () => {
       if (cancelled) return { done: true }
       if (index < frames.length) {
         clock += 100
-        return { value: frames[index++], done: false }
+        const value = frames[index++]
+        level = value.loud ? 0.5 : 0
+        return { value, done: false }
       }
       return new Promise(() => {})
     },
@@ -92,18 +95,54 @@ function fakeReceiver(frames) {
   }
   return {
     track: { kind: 'audio', readyState: 'live', reader, addEventListener() {} },
-    getContributingSources: () => [{ source: 5001, audioLevel: 0.5 }],
+    getContributingSources: () => [{ source: 5001, audioLevel: level }],
+  }
+}
+function controlledReader() {
+  const queue = []
+  let waiter = null
+  let cancelled = false
+  return {
+    push(value) {
+      if (waiter) {
+        const resolve = waiter
+        waiter = null
+        clock += 100
+        resolve({ value, done: false })
+      } else {
+        queue.push(value)
+      }
+    },
+    read() {
+      if (cancelled) return Promise.resolve({ done: true })
+      if (queue.length) {
+        clock += 100
+        return Promise.resolve({ value: queue.shift(), done: false })
+      }
+      return new Promise((resolve) => { waiter = resolve })
+    },
+    async cancel() {
+      cancelled = true
+      if (waiter) waiter({ done: true })
+    },
   }
 }
 const receiver = fakeReceiver([...Array(3).fill(frame(0.2)), ...Array(8).fill(frame(0))])
+const localTrack = { kind: 'audio', readyState: 'live', enabled: false, muted: false, reader: controlledReader(), addEventListener() {} }
+let encodingActive = true
+const sender = { track: localTrack, getParameters: () => ({ encodings: [{ active: encodingActive }] }) }
 class Peer extends EventTarget {
   createDataChannel(label) { return new Channel(label) }
   getReceivers() { return [receiver] }
+  getSenders() { return [sender] }
 }
 class FakeProcessor { constructor({ track }) { this.readable = { getReader: () => track.reader } } }
+const intervals = []
 const page = vm.createContext({
   ...context, Blob, Response, DecompressionStream, Promise, MediaStreamTrackProcessor: FakeProcessor,
   Date: { now: () => clock },
+  setInterval: (fn, ms) => { intervals.push({ fn, ms }); return intervals.length },
+  clearInterval: () => {},
   location: { origin: 'https://meet.google.com' }, RTCPeerConnection: Peer,
   fetch: async () => ({ url: 'https://example.com', untouched: true }),
   addEventListener: (type, handler) => listeners.set(type, handler),
@@ -132,11 +171,41 @@ const lanes = messages.filter((m) => m.type === 'lane')
 assert.equal(lanes.length, 10, 'Speech plus the silence tail is streamed, then streaming stops')
 assert.ok(lanes.every((m) => m.owner === 'device-3' && m.pcm.byteLength === 4800 && m.session === 'session-1'))
 assert.equal(messages.filter((m) => m.type === 'laneFlush').length, 1)
+assert.ok(!messages.some((m) => m.type === 'lane' && m.owner === 'local'), 'Muted in Meet at start means nothing of yours is captured')
 control('stop', 'session-1')
 const afterStop = messages.length
 await new Promise((resolve) => setTimeout(resolve, 20))
 assert.equal(messages.length, afterStop, 'Nothing is emitted after stop')
 assert.equal((await page.fetch('https://example.com')).untouched, true)
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 20))
+const scan = () => intervals.filter((i) => i.ms === 250).at(-1).fn()
+const localLane = (session) => messages.filter((m) => m.type === 'lane' && m.owner === 'local' && m.session === session)
+
+localTrack.enabled = true
+control('start', 'session-2')
+await tick()
+for (let i = 0; i < 3; i++) localTrack.reader.push(frame(0.2))
+await tick()
+assert.equal(localLane('session-2').length, 3, 'Your voice comes from the track Meet actually sends')
+localTrack.enabled = false
+scan()
+for (let i = 0; i < 3; i++) localTrack.reader.push(frame(0.2))
+await tick()
+assert.equal(localLane('session-2').length, 3, 'Muting in Meet mid sentence stops capture immediately')
+assert.ok(messages.some((m) => m.type === 'laneFlush' && m.session === 'session-2'), 'The sentence before muting is closed')
+localTrack.enabled = true
+encodingActive = false
+scan()
+for (let i = 0; i < 3; i++) localTrack.reader.push(frame(0.2))
+await tick()
+assert.equal(localLane('session-2').length, 3, 'A disabled sender encoding also counts as muted')
+encodingActive = true
+scan()
+for (let i = 0; i < 2; i++) localTrack.reader.push(frame(0.2))
+await tick()
+assert.equal(localLane('session-2').length, 5, 'Unmuting resumes capture')
+control('stop', 'session-2')
 
 const responses = [], portMessages = [], controls = [], timers = []
 let bridgeHandler, storageHandler, bridgeMessageHandler
@@ -212,13 +281,14 @@ assert.equal(vm.runInContext('state.lines.length', service), 0, 'The page cannot
 vm.runInContext("handleOffscreenEvent({ type: 'laneFinal', participantId: 'device-3', text: 'Dari jalur audio', startedAt: Date.now() - 1500 })", service)
 assert.equal(vm.runInContext('state.lines.length', service), 1)
 assert.equal(vm.runInContext('state.lines[0].speaker', service), 'Pembicara 3')
-vm.runInContext("handleOffscreenEvent({ type: 'liveFinal', text: 'Dari mikrofon' })", service)
+vm.runInContext("handleOffscreenEvent({ type: 'laneFinal', participantId: 'local', text: 'Dari jalur keluar Meet' })", service)
 assert.equal(vm.runInContext('state.lines[1].participantId', service), 'local')
 assert.equal(vm.runInContext('state.lines[1].identityResolved', service), true)
+assert.equal(vm.runInContext('state.lines[1].speaker', service), vm.runInContext('selfName', service))
 assert.equal((await vm.runInContext("handleServiceMessage({ type: 'speaker', name: 'Wrong' }, { tab: { id: 42 } })", service)).ok, false)
 vm.runInContext('state.paused = true', service)
 assert.equal((await vm.runInContext('handleServiceMessage(rosterMessage, { tab: { id: 42 }, frameId: 0 })', service)).ok, false)
 vm.runInContext("state.paused = false; state.status = 'uploading'", service)
 vm.runInContext("handleOffscreenEvent({ type: 'laneFinal', participantId: 'device-3', text: 'Terlambat' })", service)
 assert.equal(vm.runInContext('state.lines.length', service), 2, 'Lines never arrive outside recording')
-console.log('PASS: Meet audio lanes, stream to account mapping, late identity, duplicate names, local microphone, bridge draining, upload schema, and service boundaries (synthetic fixtures).')
+console.log('PASS: Meet audio lanes, stream to account mapping, late identity, duplicate names, local sender track with Meet mute, bridge draining, upload schema, and service boundaries (synthetic fixtures).')

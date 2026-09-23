@@ -90,8 +90,8 @@
       return
     }
 
-    if (['roster', 'devices', 'error'].includes(data.type)) {
-      send({ event: data.type, users: data.users, devices: data.devices, message: data.message })
+    if (['roster', 'devices', 'error', 'stats'].includes(data.type)) {
+      send({ event: data.type, users: data.users, devices: data.devices, message: data.message, stats: data.stats })
     }
   })
 

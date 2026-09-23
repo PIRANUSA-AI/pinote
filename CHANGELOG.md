@@ -2,6 +2,12 @@
 
 Tulis rilis terbaru paling atas. Setiap rilis diawali baris `## versi · tanggal`, lalu setiap perubahan diawali `* `.
 
+## 0.10.2 · 23 September 2026
+* Di Google Meet, suaramu diambil dari audio yang benar benar dikirim Meet, bukan dari mikrofon laptop. Kalau kamu mute di Meet, suaramu tidak ikut tercatat
+* Suara peserta lain yang keluar dari speaker tidak lagi tercatat atas namamu
+* Pembacaan audio peserta lebih tahan terhadap berbagai format audio
+* Baris diagnostik di panel selama merekam Meet untuk memudahkan pelacakan masalah
+
 ## 0.10.1 · 23 September 2026
 * Google Meet tidak butuh caption lagi. Suara tiap peserta ditranskrip terpisah dan namanya diambil langsung dari akun Meet masing masing
 * Berapa pun jumlah pesertanya, setiap kalimat diberi nama pemilik suaranya, termasuk saat dua orang bicara bersamaan

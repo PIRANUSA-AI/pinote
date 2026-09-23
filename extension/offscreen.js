@@ -151,6 +151,16 @@ function parseTag(tag) {
   return { participantId: tag.slice(0, cut), startedAt: Number.isFinite(startedAt) ? startedAt : null }
 }
 
+function reportLaneStats(current) {
+  report({
+    type: 'laneStats',
+    sockets: current.lanes.size,
+    finals: current.laneFinals,
+    errors: current.laneErrors,
+    lastError: current.laneLastError,
+  })
+}
+
 function laneSend(entry, payload) {
   if (entry.socket.readyState === WebSocket.OPEN) entry.socket.send(payload)
   else if (entry.queue.length < LANE_QUEUE_LIMIT) entry.queue.push(payload)
@@ -170,6 +180,7 @@ function laneEntry(current, lane) {
     socket.send(JSON.stringify({ type: 'start', language: current.language, sampleRate: LANE_SAMPLE_RATE }))
     for (const item of entry.queue) socket.send(item)
     entry.queue = []
+    reportLaneStats(current)
   })
 
   socket.addEventListener('message', (event) => {
@@ -183,14 +194,24 @@ function laneEntry(current, lane) {
     if (message.type === 'partial') {
       report({ type: 'lanePartial', lane, participantId, text: message.text })
     } else if (message.type === 'final') {
+      current.laneFinals++
       report({ type: 'laneFinal', lane, participantId: participantId ?? `lane:${lane}`, startedAt, text: message.text })
+      reportLaneStats(current)
     } else if (message.type === 'error') {
+      current.laneErrors++
+      current.laneLastError = String(message.message ?? '').slice(0, 120)
       report({ type: 'liveError', message: message.message })
+      reportLaneStats(current)
     }
   })
 
-  socket.addEventListener('close', () => {
+  socket.addEventListener('close', (event) => {
     if (current.lanes.get(lane) === entry) current.lanes.delete(lane)
+    if (event.code !== 1000 && event.code !== 1005 && !current.stopping) {
+      current.laneErrors++
+      current.laneLastError = `soket jalur tertutup (${event.code})`
+    }
+    reportLaneStats(current)
   })
 
   return entry
@@ -304,12 +325,14 @@ async function start({ streamId, mediaSource, language, apiBase, source, tabId, 
   })
 
   let micStream = null
-  try {
-    micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    })
-  } catch (err) {
-    report({ type: 'micUnavailable', message: err instanceof Error ? err.message : String(err) })
+  if (source !== 'meet') {
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      })
+    } catch (err) {
+      report({ type: 'micUnavailable', message: err instanceof Error ? err.message : String(err) })
+    }
   }
 
   const playbackContext = new AudioContext()
@@ -359,6 +382,9 @@ async function start({ streamId, mediaSource, language, apiBase, source, tabId, 
     source: source ?? 'upload',
     tabId: Number.isSafeInteger(tabId) ? tabId : null,
     lanes: new Map(),
+    laneFinals: 0,
+    laneErrors: 0,
+    laneLastError: '',
     skipInsights: Boolean(skipInsights),
     paused: false,
     pausedAt: null,
@@ -402,7 +428,7 @@ async function start({ streamId, mediaSource, language, apiBase, source, tabId, 
     if (current.socket && current.socket.readyState === WebSocket.OPEN) current.socket.send(event.data)
   }
 
-  connectLive()
+  if (capture.source !== 'meet') connectLive()
   report({ type: 'captureStarted' })
 }
 
