@@ -3,7 +3,22 @@ import type { Duplex } from 'node:stream'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type { User } from '../db/schema.js'
 import { findSession } from '../services/auth.js'
-import { LIVE_SAMPLE_RATE, OpenAiRealtimeSession } from '../services/openaiRealtime.js'
+import { DeepgramLiveSession } from '../services/deepgramLive.js'
+import { LIVE_SAMPLE_RATE, OpenAiRealtimeSession, type LiveTranscriptionHandlers } from '../services/openaiRealtime.js'
+
+type LiveSession = OpenAiRealtimeSession | DeepgramLiveSession
+
+function liveProvider(): 'deepgram' | 'openai' {
+  const chosen = (process.env.LIVE_PROVIDER ?? '').trim().toLowerCase()
+  if (chosen === 'deepgram' || chosen === 'openai') return chosen
+  return process.env.DEEPGRAM_API_KEY ? 'deepgram' : 'openai'
+}
+
+function createLiveSession(language: 'id' | 'en' | 'auto', handlers: LiveTranscriptionHandlers, sampleRate: number): LiveSession {
+  return liveProvider() === 'deepgram'
+    ? new DeepgramLiveSession(language, handlers, sampleRate)
+    : new OpenAiRealtimeSession(language, handlers, sampleRate)
+}
 
 const LIVE_PATH = '/live'
 const BYTES_PER_SECOND = LIVE_SAMPLE_RATE * 2
@@ -50,7 +65,7 @@ function releaseSlot(userId: string): void {
 }
 
 function handleConnection(ws: WebSocket, user: User): void {
-  let session: OpenAiRealtimeSession | null = null
+  let session: LiveSession | null = null
   let streamedBytes = 0
   let settled = false
 
@@ -69,7 +84,7 @@ function handleConnection(ws: WebSocket, user: User): void {
 
   const start = (language: 'id' | 'en' | 'auto', sampleRate: number) => {
     if (session) return
-    session = new OpenAiRealtimeSession(language, {
+    session = createLiveSession(language, {
       onReady: () => send({ type: 'ready' }),
       onPartial: (text, tag) => send({ type: 'partial', text, tag }),
       onFinal: (text, tag) => send({ type: 'final', text, tag }),

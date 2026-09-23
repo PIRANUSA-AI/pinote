@@ -7,6 +7,7 @@ Tulis rilis terbaru paling atas. Setiap rilis diawali baris `## versi · tanggal
 * Berapa pun jumlah pesertanya, setiap kalimat diberi nama pemilik suaranya, termasuk saat dua orang bicara bersamaan
 * Suaramu sendiri tetap dari mikrofon dengan nama akunmu
 * Kalimat terakhir sebelum kamu menekan berhenti ikut tersimpan
+* Transkrip langsung kini memakai Deepgram
 
 ## 0.9.0 · 22 September 2026
 * Tombol Mulai Rekapin kini selalu jalan. Chrome menampilkan dialog pilih tab sekali, lalu perekaman dimulai
