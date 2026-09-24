@@ -17,7 +17,7 @@ function glmClient(): OpenAI {
   return new OpenAI({ apiKey: k, baseURL: GLM_BASE_URL })
 }
 
-async function callGlmJson(messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]): Promise<unknown> {
+export async function callGlmJson(messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]): Promise<unknown> {
   const glm = glmClient()
   const response = (await glm.chat.completions.create({
     model: GLM_MODEL,

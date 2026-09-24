@@ -11,7 +11,8 @@
     "build": "npm --prefix frontend run build && npm --prefix backend run build",
     "build:backend": "npm --prefix backend run build",
     "build:frontend": "npm --prefix frontend run build",
-    "pack:extension": "node scripts/packExtension.mjs"
+    "pack:extension": "node scripts/packExtension.mjs",
+    "test": "node scripts/runTests.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.2.3",

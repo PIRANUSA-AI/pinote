@@ -106,6 +106,7 @@ function httpError(message, status) {
 }
 
 const AUTO_LIVE_LANGUAGE = 'id'
+const LIVE_QUIET_MAX_MS = 60000
 
 function liveLanguage(language) {
   return !language || language === 'auto' ? AUTO_LIVE_LANGUAGE : language
@@ -479,6 +480,7 @@ async function start({ streamId, mediaSource, language, apiBase, source, tabId, 
     energyTimer: null,
     lastVoiceAt: 0,
     awaitingFlush: false,
+    liveQuietUntil: 0,
   }
 
   capture.energyTimer = setInterval(() => {
@@ -506,6 +508,7 @@ async function start({ streamId, mediaSource, language, apiBase, source, tabId, 
   pcmNode.port.onmessage = (event) => {
     const current = capture
     if (!current || current.paused || current.stopping) return
+    if (current.liveQuietUntil > Date.now()) return
     if (current.socket && current.socket.readyState === WebSocket.OPEN) current.socket.send(event.data)
     else if (current.source === 'meet') sampleParticipants(current, event.data)
   }
@@ -560,6 +563,7 @@ async function createJob(job) {
         language: job.language,
         source: job.source,
         skipInsights: job.skipInsights,
+        titleHint: job.titleHint,
         attendance: job.attendance,
         speakerTimeline: job.speakerTimeline,
         nativeTranscript: job.nativeTranscript,
@@ -649,7 +653,7 @@ async function runUpload() {
   if (delivered && uploadQueue.length > 0) void runUpload()
 }
 
-async function stop(attendance, speakerTimeline, nativeTranscript) {
+async function stop(attendance, speakerTimeline, nativeTranscript, titleHint) {
   if (!capture) return { ok: false, error: 'Tidak ada perekaman aktif' }
   const current = capture
   current.stopping = true
@@ -689,11 +693,11 @@ async function stop(attendance, speakerTimeline, nativeTranscript) {
     source: current.source,
     skipInsights: current.skipInsights,
     recoveryId: current.recoveryId,
-  }, { attendance, speakerTimeline, nativeTranscript })
+  }, { attendance, speakerTimeline, nativeTranscript, titleHint })
   return { ok: true, accepted: true }
 }
 
-function queueUpload(recording, { attendance, speakerTimeline, nativeTranscript }) {
+function queueUpload(recording, { attendance, speakerTimeline, nativeTranscript, titleHint }) {
   const descriptor = uploadDescriptor(recording.mime)
   const stamp = new Date(recording.at).toISOString().replace(/[:.]/g, '').slice(0, 15)
   const prefix = recording.source === 'whatsapp' ? 'panggilan whatsapp' : 'rapat'
@@ -710,6 +714,7 @@ function queueUpload(recording, { attendance, speakerTimeline, nativeTranscript 
     speakerTimeline: Array.isArray(speakerTimeline) ? speakerTimeline : [],
     nativeTranscript: recording.source === 'meet' && Array.isArray(nativeTranscript) ? nativeTranscript : undefined,
     recoveryId: recording.recoveryId ?? null,
+    titleHint: typeof titleHint === 'string' && titleHint ? titleHint.slice(0, 300) : undefined,
     jobId: null,
     uploadUrl: null,
   })
@@ -774,6 +779,20 @@ function setPaused(paused) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target !== 'offscreen') return undefined
 
+  if (message.type === 'quietLive') {
+    const current = capture
+    const until = Number(message.until)
+    if (!current || current.source === 'meet' || !Number.isFinite(until)) {
+      sendResponse({ ok: false })
+      return undefined
+    }
+    const wasQuiet = current.liveQuietUntil > Date.now()
+    current.liveQuietUntil = Math.min(until, Date.now() + LIVE_QUIET_MAX_MS)
+    if (!wasQuiet && current.socket?.readyState === WebSocket.OPEN) current.socket.send(JSON.stringify({ type: 'flush' }))
+    sendResponse({ ok: true })
+    return undefined
+  }
+
   if (message.type === 'setPaused') {
     sendResponse(setPaused(Boolean(message.paused)))
     return undefined
@@ -826,7 +845,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'stopCapture') {
-    stop(message.attendance, message.speakerTimeline, message.nativeTranscript)
+    stop(message.attendance, message.speakerTimeline, message.nativeTranscript, message.titleHint)
       .then((result) => sendResponse(result))
       .catch((err) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }))
     return true

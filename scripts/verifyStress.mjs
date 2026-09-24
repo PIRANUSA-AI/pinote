@@ -16,6 +16,7 @@ const WORDS = ['kita', 'perlu', 'cek', 'laporan', 'minggu', 'ini', 'soal', 'angg
 let writes = 0
 let largestWrite = 0
 let panelUpdates = 0
+let largestPanelMessage = 0
 const noopEvent = { addListener() {} }
 const service = vm.createContext({
   applyMeetEvent, applyUtterance, claimSelfVoice, nativeTranscript, Date, URL, crypto: globalThis.crypto, setTimeout, clearTimeout,
@@ -34,7 +35,11 @@ const service = vm.createContext({
       onChanged: noopEvent,
     },
     contextMenus: { onClicked: noopEvent }, commands: { onCommand: noopEvent },
-    runtime: { onInstalled: noopEvent, onMessage: noopEvent, sendMessage: async (message) => { if (message?.target === 'panel') panelUpdates++ } },
+    runtime: { onInstalled: noopEvent, onMessage: noopEvent, sendMessage: async (message) => {
+      if (message?.target !== 'panel') return
+      panelUpdates++
+      largestPanelMessage = Math.max(largestPanelMessage, JSON.stringify(message).length)
+    } },
   },
 })
 vm.runInContext(readFileSync(new URL('../extension/languageDetect.js', import.meta.url), 'utf8'), service)
@@ -80,6 +85,7 @@ assert.ok(ingestMs < 8000, `Ingesting ${lines.length} lines stays fast (took ${M
 await new Promise((resolve) => setTimeout(resolve, 2200))
 writes = 0
 panelUpdates = 0
+largestPanelMessage = 0
 const liveStarted = performance.now()
 for (let i = 0; i < 60; i++) {
   service.batch = { type: 'meetNative', session: 's1', event: 'utterances', utterances: [{
@@ -92,6 +98,25 @@ for (let i = 0; i < 60; i++) {
 const liveSeconds = (performance.now() - liveStarted) / 1000
 assert.ok(panelUpdates <= Math.ceil(liveSeconds / 0.3) + 1, `The panel gets at most one update per 300 ms (${panelUpdates} in ${liveSeconds.toFixed(1)} s)`)
 assert.ok(writes <= Math.ceil(liveSeconds / 2) + 1, `Storage is written at most once per 2 s (${writes} in ${liveSeconds.toFixed(1)} s)`)
+assert.ok(largestPanelMessage < 50000, `Panel updates carry only changed lines, not the whole meeting (${largestPanelMessage} bytes)`)
+
+const panelContext = { lines: [], seq: -1 }
+const applyDelta = (delta) => {
+  if (delta.seq !== panelContext.seq + 1 || delta.from > panelContext.lines.length) return false
+  panelContext.lines = panelContext.lines.slice(0, delta.from).concat(delta.tail)
+  panelContext.seq = delta.seq
+  return panelContext.lines.length === delta.total
+}
+const full = vm.runInContext('handleServiceMessage({ type: "getState" })', service)
+const snapshot = await full
+panelContext.lines = snapshot.lines
+panelContext.seq = snapshot.linesSeq
+vm.runInContext("state.lines[5].text = 'Revisi lama di atas'; state.lines.push({ text: 'baris baru', speaker: 'Peserta 1', participantId: 'spaces/s/devices/1', at: Date.now() })", service)
+const delta = vm.runInContext('linesDelta()', service)
+assert.equal(delta.from, 5, 'The delta starts at the first changed line')
+assert.equal(applyDelta(delta), true)
+assert.equal(JSON.stringify(panelContext.lines.map((l) => l.text)), JSON.stringify(vm.runInContext('state.lines.map((l) => l.text)', service)), 'Applying deltas rebuilds exactly the service lines')
+assert.equal(applyDelta({ ...vm.runInContext('linesDelta()', service), seq: panelContext.seq + 5 }), false, 'A skipped update is detected so the panel pulls a fresh copy')
 
 const time = (fn) => {
   const t = performance.now()

@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { z } from 'zod'
-import { eq, and, sum, max, count, or, sql, asc, desc } from 'drizzle-orm'
+import { eq, and, sum, max, count, or, sql, asc, desc, gt, inArray } from 'drizzle-orm'
 import {
   buildSessionCookie,
   clearSessionCookie,
@@ -18,6 +18,8 @@ import { db } from '../db/client.js'
 import { actionItems, jobs, users } from '../db/schema.js'
 import { cacheUserStats, getCachedUserStats, cacheIncrWithTtl, cacheDelete, cacheGet } from '../services/cache.js'
 import { nanoid } from 'nanoid'
+import { parseDue } from '../lib/dueDate.js'
+import { aggregateMeetingStats } from '../lib/meetingStats.js'
 
 function crossSiteReady(forwardedProto: string | undefined, host: string | undefined): boolean {
   if (forwardedProto === 'https') return true
@@ -123,6 +125,7 @@ authRouter.get('/me/tasks', requireAuth, async (c) => {
     assigneeId: string | null
     task: string
     due: string | null
+    dueOn: string | null
     confidence: number
     done: boolean
     order: number
@@ -142,6 +145,7 @@ authRouter.get('/me/tasks', requireAuth, async (c) => {
         assigneeId: actionItems.assigneeId,
         task: actionItems.task,
         due: actionItems.due,
+        dueOn: actionItems.dueOn,
         confidence: actionItems.confidence,
         done: actionItems.done,
         order: actionItems.order,
@@ -170,6 +174,7 @@ authRouter.get('/me/tasks', requireAuth, async (c) => {
         assigneeId: actionItems.assigneeId,
         task: actionItems.task,
         due: actionItems.due,
+        dueOn: actionItems.dueOn,
         confidence: actionItems.confidence,
         done: actionItems.done,
         order: actionItems.order,
@@ -279,7 +284,10 @@ authRouter.patch('/me/tasks', requireAuth, async (c) => {
   const patch: Record<string, unknown> = {}
   if (parsed.data.done !== undefined) patch.done = parsed.data.done
   if (parsed.data.task !== undefined) patch.task = parsed.data.task
-  if (parsed.data.due !== undefined) patch.due = parsed.data.due
+  if (parsed.data.due !== undefined) {
+    patch.due = parsed.data.due
+    patch.dueOn = parseDue(parsed.data.due, new Date())
+  }
   if (item.assigneeId === null) patch.assigneeId = user.id
   if (Object.keys(patch).length === 0) return c.json({ ok: true, unchanged: true })
 
@@ -448,6 +456,32 @@ authRouter.get('/me/stats', requireAuth, async (c) => {
 
   await cacheUserStats(user.id, stats)
   return c.json(stats)
+})
+
+authRouter.get('/me/meeting-stats', requireAuth, async (c) => {
+  const user = c.get('user')
+  const days = Math.min(Math.max(Number(c.req.query('days') ?? 30) || 30, 7), 180)
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+
+  const rows = await db
+    .select({ id: jobs.id, transcript: jobs.transcript, speakerNames: jobs.speakerNames })
+    .from(jobs)
+    .where(and(eq(jobs.userId, user.id), eq(jobs.status, 'completed'), gt(jobs.createdAt, since)))
+    .orderBy(desc(jobs.createdAt))
+    .limit(100)
+
+  const items = rows.length > 0
+    ? await db
+      .select({ owner: actionItems.owner, done: actionItems.done })
+      .from(actionItems)
+      .where(inArray(actionItems.jobId, rows.map((row) => row.id)))
+    : []
+
+  const stats = aggregateMeetingStats(
+    rows.map((row) => ({ segments: row.transcript?.segments ?? [], speakerNames: row.speakerNames ?? {} })),
+    items,
+  )
+  return c.json({ days, ...stats })
 })
 
 function loginRateLimitKey(ip: string, username: string): string {

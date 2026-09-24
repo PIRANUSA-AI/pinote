@@ -6,9 +6,13 @@ import { db } from '../db/client.js'
 import { actionItems, jobs, users, type ActionItemRow, type JobStatus } from '../db/schema.js'
 import { requireAuth, type AppEnv } from '../middleware/auth.js'
 import { isAllowedMime, normalizeMime, MAX_FILE_BYTES } from '../lib/validate.js'
-import { cacheJobStatus, getCachedJobStatus } from '../services/cache.js'
+import { cacheIncrWithTtl, cacheJobStatus, getCachedJobStatus } from '../services/cache.js'
+import { askMeeting } from '../services/meetingQa.js'
+import { callGlmJson } from '../services/insights.js'
 import { createDownloadUrl, objectExists } from '../services/storage.js'
 import { nativeTranscriptSchema } from '../lib/nativeTranscript.js'
+import { parseDue } from '../lib/dueDate.js'
+import { cleanTitleHint } from '../lib/titleHint.js'
 
 function safeFilename(name: string): string {
   const base = name.replace(/[/\\]+/g, '_').replace(/^\.+/, '').trim()
@@ -23,6 +27,7 @@ const createSchema = z.object({
   language: z.enum(['id', 'en', 'auto']).optional(),
   source: z.enum(['upload', 'meet', 'zoom', 'teams', 'whatsapp']).optional(),
   skipInsights: z.boolean().optional(),
+  titleHint: z.string().max(300).optional(),
   nativeTranscript: nativeTranscriptSchema.optional(),
   attendance: z.array(z.string().min(1).max(120)).max(50).optional(),
   speakerTimeline: z
@@ -73,6 +78,7 @@ jobsRouter.post('/', async (c) => {
       id: jobId,
       userId: user.id,
       filename: parsed.data.filename,
+      title: cleanTitleHint(parsed.data.titleHint),
       mimeType: mime,
       sizeBytes: parsed.data.sizeBytes,
       durationSec: parsed.data.durationSec,
@@ -345,7 +351,10 @@ jobsRouter.patch('/:id/action-items', async (c) => {
     const patch: Record<string, unknown> = {}
     if (u.owner !== undefined) patch.owner = u.owner
     if (u.task !== undefined) patch.task = u.task
-    if (u.due !== undefined) patch.due = u.due
+    if (u.due !== undefined) {
+      patch.due = u.due
+      patch.dueOn = parseDue(u.due, new Date())
+    }
     if (u.done !== undefined) patch.done = u.done
     if (u.confidence !== undefined) patch.confidence = u.confidence
     if (Object.keys(patch).length > 0) {
@@ -361,6 +370,7 @@ jobsRouter.patch('/:id/action-items', async (c) => {
         owner: ins.owner!,
         task: ins.task!,
         due: ins.due ?? null,
+        dueOn: parseDue(ins.due, new Date()),
         confidence: ins.confidence ?? 1,
         done: ins.done ?? false,
         order: 1000 + i,
@@ -370,6 +380,43 @@ jobsRouter.patch('/:id/action-items', async (c) => {
 
   const refreshed = await loadActionItems(id)
   return c.json({ actionItems: refreshed })
+})
+
+const askSchema = z.object({ question: z.string().trim().min(3).max(500) })
+const ASK_PER_HOUR = 30
+
+jobsRouter.post('/:id/ask', async (c) => {
+  const user = c.get('user')
+  const id = c.req.param('id')
+  const parsed = askSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) return c.json({ error: 'Tulis pertanyaan minimal 3 huruf.' }, 400)
+
+  const [job] = await db
+    .select({ status: jobs.status, transcript: jobs.transcript, speakerNames: jobs.speakerNames, title: jobs.title })
+    .from(jobs)
+    .where(and(eq(jobs.id, id), eq(jobs.userId, user.id)))
+    .limit(1)
+  if (!job) return c.json({ error: 'Job tidak ditemukan' }, 404)
+  const segments = job.transcript?.segments ?? []
+  if (job.status !== 'completed' || segments.length === 0) return c.json({ error: 'Transkrip rapat ini belum siap.' }, 409)
+
+  const used = await cacheIncrWithTtl(`ask:${user.id}`, 3600)
+  if (used > ASK_PER_HOUR) return c.json({ error: `Maksimal ${ASK_PER_HOUR} pertanyaan per jam. Coba lagi nanti.` }, 429)
+
+  try {
+    const result = await askMeeting({
+      segments,
+      question: parsed.data.question,
+      speakerNames: job.speakerNames ?? {},
+      title: job.title,
+      summary: job.transcript?.summary,
+      complete: (messages) => callGlmJson(messages),
+    })
+    return c.json(result)
+  } catch (err) {
+    console.warn(`[${id}] Ask failed:`, err instanceof Error ? err.message : err)
+    return c.json({ error: 'Belum bisa menjawab sekarang. Coba lagi sebentar lagi.' }, 502)
+  }
 })
 
 // Rename a speaker label for a job (e.g. "Speaker 2" -> "Salopu"). Stored as a
@@ -458,6 +505,7 @@ function toJobDetail(
         owner: it.owner,
         task: it.task,
         due: it.due,
+        dueOn: it.dueOn,
         confidence: it.confidence,
         done: it.done,
         order: it.order,

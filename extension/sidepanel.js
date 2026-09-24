@@ -491,7 +491,7 @@ function flashLabel(button, text) {
   const original = button.dataset.label ?? button.textContent
   button.dataset.label = original
   button.textContent = text
-  setTimeout(() => { button.textContent = original }, 1400)
+  setTimeout(() => { button.textContent = original }, Math.max(1400, text.length * 60))
 }
 
 function elapsedMs(state) {
@@ -555,17 +555,17 @@ function renderFocusBar(state) {
   if (pause.dataset.mode !== mode) {
     pause.dataset.mode = mode
     pause.replaceChildren(icon(state.paused ? PLAY_ICON : PAUSE_ICON))
-    pause.title = state.paused ? 'Lanjutkan' : 'Jeda'
+    pause.title = state.paused ? 'Lanjutkan (Spasi)' : 'Jeda (Spasi)'
     pause.setAttribute('aria-label', state.paused ? 'Lanjutkan rekaman' : 'Jeda rekaman')
   }
   el('focusFinish').disabled = el('recordButton').disabled
 }
 
-function setFocusMode(value) {
+function setFocusMode(value, moveFocus = true) {
   focusMode = value
   chrome.storage.local.set({ focusMode }).catch(() => {})
   if (latestState) renderControls(latestState)
-  el(value ? 'focusExpand' : 'focusToggle').focus()
+  if (moveFocus) el(value ? 'focusExpand' : 'focusToggle').focus()
 }
 
 function renderControls(state) {
@@ -594,6 +594,10 @@ function renderControls(state) {
   if (attendance.length > 0) el('attendanceRow').textContent = `Hadir: ${attendance.join(', ')}`
   show(el('attendanceRow'), recording && attendance.length > 0)
   renderTalkTime(recording ? talkTime(state.lines) : [])
+  const sharing = Boolean(state.liveShare?.url)
+  show(el('shareRow'), recording && state.source !== 'whatsapp')
+  show(el('shareStart'), !sharing)
+  show(el('shareActive'), sharing)
   const active = onMeet ? state.meetStats?.language : ''
   if (active) {
     const name = LANGUAGE_NAMES[active] ?? active
@@ -693,14 +697,36 @@ function applyState(state) {
   renderTranscript(state)
 }
 
+let panelLines = []
+let panelLinesSeq = -1
+let pulling = false
+
 async function pullState() {
-  const state = await chrome.runtime.sendMessage({ target: 'service', type: 'getState' })
-  if (state) applyState(state)
+  pulling = true
+  try {
+    const state = await chrome.runtime.sendMessage({ target: 'service', type: 'getState' })
+    if (!state) return
+    panelLines = Array.isArray(state.lines) ? state.lines : []
+    panelLinesSeq = Number.isInteger(state.linesSeq) ? state.linesSeq : -1
+    applyState(state)
+  } finally {
+    pulling = false
+  }
+}
+
+function applyLinesDelta(delta) {
+  if (!delta || delta.seq !== panelLinesSeq + 1 || delta.from > panelLines.length) return false
+  panelLines = panelLines.slice(0, delta.from).concat(delta.tail)
+  panelLinesSeq = delta.seq
+  return panelLines.length === delta.total
 }
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.target !== 'panel') return undefined
-  if (message.type === 'state') applyState(message.state)
+  if (message.type === 'state') {
+    if (applyLinesDelta(message.lines)) applyState({ ...message.state, lines: panelLines })
+    else if (!pulling) void pullState()
+  }
   if (message.type === 'micPermission') {
     notice = message.granted
       ? 'Mikrofon siap. Tekan Mulai Rekapin.'
@@ -763,6 +789,31 @@ document.addEventListener('keydown', (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
     event.preventDefault()
     setSearchOpen(true)
+  }
+})
+
+function typingInto(target) {
+  return target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.defaultPrevented || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return
+  if (!el('cancelModal').hidden || typingInto(event.target)) return
+  const recording = latestState?.status === 'recording'
+  if (event.key === '/') {
+    event.preventDefault()
+    setSearchOpen(true)
+    return
+  }
+  if ((event.key === 'f' || event.key === 'F') && recording) {
+    event.preventDefault()
+    setFocusMode(!focusMode, false)
+    return
+  }
+  if (event.code === 'Space' && recording) {
+    if (event.target instanceof HTMLElement && event.target.closest('button, a, [role="button"], summary')) return
+    event.preventDefault()
+    el('pauseButton').click()
   }
 })
 
@@ -892,6 +943,39 @@ el('discardUploadButton').addEventListener('click', async () => {
   const sure = window.confirm('Buang rekaman ini? Rekaman yang belum terkirim akan hilang permanen.')
   if (!sure) return
   await chrome.runtime.sendMessage({ target: 'service', type: 'discardUpload' })
+  await pullState()
+})
+
+async function copyShareLink(url) {
+  try {
+    await navigator.clipboard.writeText(url)
+    flashLabel(el('shareCopy'), 'Tersalin')
+  } catch {
+    flashLabel(el('shareCopy'), 'Gagal menyalin')
+  }
+}
+
+el('shareStart').addEventListener('click', async () => {
+  el('shareStart').disabled = true
+  const result = await chrome.runtime.sendMessage({ target: 'service', type: 'startLiveShare' }).catch(() => null)
+  el('shareStart').disabled = false
+  if (!result?.ok) {
+    flashLabel(el('shareStart').querySelector('span'), result?.error || 'Tautan belum bisa dibuat. Coba lagi.')
+    return
+  }
+  await pullState()
+  if (result.url) await copyShareLink(result.url)
+})
+
+el('shareCopy').addEventListener('click', () => {
+  const url = latestState?.liveShare?.url
+  if (url) void copyShareLink(url)
+})
+
+el('shareStop').addEventListener('click', async () => {
+  el('shareStop').disabled = true
+  await chrome.runtime.sendMessage({ target: 'service', type: 'stopLiveShare' }).catch(() => null)
+  el('shareStop').disabled = false
   await pullState()
 })
 

@@ -20,6 +20,11 @@ jobs:
           npm --prefix frontend install --no-audit --no-fund
           npm run build
 
+      - name: Jalankan tes
+        run: |
+          cd /var/www/pinote
+          npm test
+
       - name: Migrasi dan restart
         run: |
           cd /var/www/pinote

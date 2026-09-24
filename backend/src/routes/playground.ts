@@ -5,6 +5,7 @@ import { nanoid } from 'nanoid'
 import OpenAI from 'openai'
 import { db } from '../db/client.js'
 import { actionItems, users } from '../db/schema.js'
+import { parseDue } from '../lib/dueDate.js'
 import { requireAdmin, type AppEnv } from '../middleware/auth.js'
 
 const GLM_BASE_URL = process.env.GLM_BASE_URL ?? 'https://api.z.ai/api/paas/v4'
@@ -119,6 +120,7 @@ playgroundRouter.post('/generate', requireAdmin, async (c) => {
       owner: t.owner || 'Unassigned',
       task: t.task,
       due: t.due ?? null,
+      dueOn: parseDue(t.due, new Date()),
       assigneeId: null,
       confidence: 0.9,
       done: false,
@@ -143,6 +145,7 @@ playgroundRouter.get('/tasks', async (c) => {
       assigneeId: actionItems.assigneeId,
       task: actionItems.task,
       due: actionItems.due,
+      dueOn: actionItems.dueOn,
       confidence: actionItems.confidence,
       done: actionItems.done,
       order: actionItems.order,
@@ -184,6 +187,7 @@ playgroundRouter.post('/tasks', async (c) => {
     owner: parsed.data.owner.trim(),
     task: parsed.data.task.trim(),
     due: parsed.data.due ?? null,
+    dueOn: parseDue(parsed.data.due, new Date()),
     assigneeId: parsed.data.assigneeId ?? null,
     confidence: 1,
     done: false,
@@ -219,7 +223,10 @@ playgroundRouter.patch('/tasks/:id', async (c) => {
   const patch: Record<string, unknown> = {}
   if (parsed.data.owner !== undefined) patch.owner = parsed.data.owner.trim()
   if (parsed.data.task !== undefined) patch.task = parsed.data.task.trim()
-  if (parsed.data.due !== undefined) patch.due = parsed.data.due
+  if (parsed.data.due !== undefined) {
+    patch.due = parsed.data.due
+    patch.dueOn = parseDue(parsed.data.due, new Date())
+  }
   if (parsed.data.done !== undefined) patch.done = parsed.data.done
 
   await db.update(actionItems).set(patch).where(eq(actionItems.id, id))

@@ -21,6 +21,7 @@ import { tasksRouter } from './routes/tasks.js'
 import { playgroundRouter } from './routes/playground.js'
 import { searchRouter } from './routes/search.js'
 import { remindersRouter } from './routes/reminders.js'
+import { liveSharesRouter } from './routes/liveShares.js'
 import { db } from './db/client.js'
 import { jobs } from './db/schema.js'
 import { inArray, sql } from 'drizzle-orm'
@@ -134,6 +135,7 @@ app.route('/tasks', tasksRouter)
 app.route('/playground', playgroundRouter)
 app.route('/search', searchRouter)
 app.route('/reminders', remindersRouter)
+app.route('/live-shares', liveSharesRouter)
 
 app.onError((err, c) => {
   console.error('Unhandled error:', err)

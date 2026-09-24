@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { db } from '../db/client.js'
 import { actionItems, jobs, users, type JobStatus, type TranscriptPayload } from '../db/schema.js'
@@ -10,8 +10,10 @@ import { createDownloadUrl } from './storage.js'
 import { fallbackMeetingTitle, sendTaskDigest } from './email.js'
 import { nativeSegments } from '../lib/nativeTranscript.js'
 import { publicError } from '../lib/publicError.js'
+import { parseDue } from '../lib/dueDate.js'
 
 const TRANSCRIPTION_URL_TTL_SEC = 4 * 60 * 60
+export const MAX_INSIGHT_ATTEMPTS = 3
 
 const PROGRESS_BY_STEP: Record<string, number> = {
   'Transcribing audio...': 40,
@@ -85,7 +87,6 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
       return 'mixed'
     }
 
-    // Save raw transcript immediately so user can see results
     const rawPayload: TranscriptPayload = {
       segments,
       rawSegments: undefined,
@@ -103,186 +104,17 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
         durationSec: actualDuration,
         completedAt: new Date(),
         errorMessage: null,
+        insightStatus: job.skipInsights ? 'skipped' : 'pending',
+        insightAttempts: 0,
+        insightStartedAt: null,
       })
       .where(eq(jobs.id, jobId))
 
-    await cacheJobStatus(jobId, { status: 'completed', progress: 65 })
+    await cacheJobStatus(jobId, { status: 'completed', progress: job.skipInsights ? 100 : 65 })
     await invalidateUserStats(job.userId)
 
-    // Phase 2: Background processing
-    void (async () => {
-      if (job.skipInsights) {
-        await cacheJobStatus(jobId, { status: 'completed', progress: 100 })
-        console.log(`[${jobId}] Background: insights skipped by request`)
-        return
-      }
-      try {
-        // Step 1: Generate title, summary, action items FIRST (uses raw segments)
-        console.log(`[${jobId}] Background: Generating summary...`)
-        await cacheJobStatus(jobId, { status: 'completed', progress: 75 })
-        const insights = await generateInsights(segments)
-
-        const updatedSpeakers = new Set(segments.map((s) => s.speaker))
-
-        await db
-          .update(jobs)
-          .set({
-            transcript: {
-              segments,
-              rawSegments: undefined,
-              polished: false,
-              speakerCount: updatedSpeakers.size,
-              summary: insights.summary,
-              language: rawPayload.language,
-            },
-            title: insights.title || null,
-          })
-          .where(eq(jobs.id, jobId))
-
-        // Summary is now persisted, so the job is fully usable for the client.
-        // Mark progress 100 immediately so a stale progress value can never
-        // make the UI keep showing "Menyiapkan ringkasan..." after the summary
-        // is already in the database.
-        await cacheJobStatus(jobId, { status: 'completed', progress: 100 })
-
-        if (insights.actionItems.length > 0 && job.isPrivate) {
-          const [owner] = await db
-            .select({ displayName: users.displayName, username: users.username })
-            .from(users)
-            .where(eq(users.id, job.userId))
-            .limit(1)
-          const ownerName = owner?.displayName ?? owner?.username ?? 'Saya'
-          const ownerKey = ownerName.trim().toLowerCase()
-
-          await db
-            .insert(actionItems)
-            .values(
-              insights.actionItems.map((it, i) => {
-                const mentioned = it.owner.trim()
-                const task = mentioned && mentioned.toLowerCase() !== ownerKey ? `${it.task} (terkait ${mentioned})` : it.task
-                return {
-                  id: nanoid(),
-                  jobId,
-                  owner: ownerName,
-                  assigneeId: job.userId,
-                  task,
-                  due: it.due ?? null,
-                  confidence: it.confidence,
-                  order: i,
-                }
-              })
-            )
-            .catch((err) => console.warn(`[${jobId}] Failed to persist private action items:`, err))
-        }
-
-        if (insights.actionItems.length > 0 && !job.isPrivate) {
-          await db
-            .insert(actionItems)
-            .values(
-              insights.actionItems.map((it, i) => ({
-                id: nanoid(),
-                jobId,
-                owner: it.owner,
-                task: it.task,
-                due: it.due ?? null,
-                confidence: it.confidence,
-                order: i,
-              }))
-            )
-            .catch((err) => console.warn(`[${jobId}] Failed to persist action items:`, err))
-
-          const meetingAt = new Date(new Date(job.createdAt).getTime() - (actualDuration ?? 0) * 1000)
-          const meetingTitle = insights.title || job.title || fallbackMeetingTitle(meetingAt)
-
-          type ResolvedUser = { email: string; displayName: string | null; ccEmails: string[] }
-          const ownerCache = new Map<string, ResolvedUser | null>()
-          const resolveOwner = async (name: string): Promise<ResolvedUser | null> => {
-            const cached = ownerCache.get(name)
-            if (cached !== undefined) return cached
-            const [row] = await db
-              .select({ email: users.email, displayName: users.displayName, ccEmails: users.ccEmails })
-              .from(users)
-              .where(sql`LOWER(COALESCE(${users.displayName}, ${users.username})) = ${name}`)
-              .limit(1)
-            const resolved: ResolvedUser | null = row?.email
-              ? { email: row.email, displayName: row.displayName, ccEmails: (row.ccEmails ?? []) as string[] }
-              : null
-            ownerCache.set(name, resolved)
-            return resolved
-          }
-
-          const bundles = new Map<string, { assigneeName: string; tasks: { taskTitle: string; due?: string | null }[] }>()
-
-          for (const item of insights.actionItems) {
-            const user = await resolveOwner(item.owner.trim().toLowerCase())
-            if (!user) continue
-
-            const assigneeName = user.displayName ?? item.owner
-            const recipients = [user.email, ...user.ccEmails.filter((cc) => cc !== user.email)]
-            for (const to of recipients) {
-              const bundle = bundles.get(to)
-              const task = { taskTitle: item.task, due: item.due ?? null }
-              if (bundle) {
-                bundle.tasks.push(task)
-              } else {
-                bundles.set(to, { assigneeName, tasks: [task] })
-              }
-            }
-          }
-
-          for (const [to, bundle] of bundles) {
-            sendTaskDigest({
-              to,
-              tasks: bundle.tasks,
-              meetingTitle,
-              meetingAt,
-              jobId,
-              assigneeName: bundle.assigneeName,
-            }).catch((err) => console.warn(`[${jobId}] Email send failed for ${to}:`, err))
-          }
-        }
-
-        // Step 2: Polish transcript (refine segment text) in background
-        // Keep native event boundaries and identity intact; GLM is for insights.
-        if (segments.length > 0 && job.nativeTranscript === null) {
-          console.log(`[${jobId}] Background: Refining transcript...`)
-          try {
-            const r = await polishTranscript(segments)
-            const polishedSegments = r.polished
-            const rawSegments = r.raw
-            console.log(`[${jobId}] Background: Polish pass done (${rawSegments.length} -> ${polishedSegments.length} segments)`)
-
-            const finalSpeakers = new Set(polishedSegments.map((s) => s.speaker))
-
-            await db
-              .update(jobs)
-              .set({
-                transcript: {
-                  segments: polishedSegments,
-                  rawSegments,
-                  polished: true,
-                  speakerCount: finalSpeakers.size,
-                  summary: insights.summary,
-                  language: rawPayload.language,
-                },
-              })
-              .where(eq(jobs.id, jobId))
-          } catch (err) {
-            console.warn(`[${jobId}] Background polish failed, keeping raw:`, err)
-          }
-        }
-
-        await cacheJobStatus(jobId, { status: 'completed', progress: 100 })
-        console.log(`[${jobId}] Background: Processing complete`)
-      } catch (err) {
-        const bgMsg = err instanceof Error ? err.message : String(err)
-        console.error(`[${jobId}] Background processing failed:`, bgMsg)
-        await db
-          .update(jobs)
-          .set({ errorMessage: `Peringatan: ${publicError(bgMsg, 'ringkasan dan tugas belum berhasil dibuat.')}` })
-          .where(eq(jobs.id, jobId))
-      }
-    })()
+    if (job.skipInsights) console.log(`[${jobId}] Background: insights skipped by request`)
+    else void runInsights(jobId)
   } catch (err) {
     const [current] = await db
       .select({ status: jobs.status })
@@ -305,5 +137,200 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
         .where(eq(jobs.id, jobId)),
       cacheJobStatus(jobId, { status: 'failed', error: msg }),
     ])
+  }
+}
+
+export const activeInsights = new Set<string>()
+
+export async function runInsights(jobId: string): Promise<void> {
+  if (activeInsights.has(jobId)) return
+  activeInsights.add(jobId)
+  try {
+    await generateJobInsights(jobId)
+  } finally {
+    activeInsights.delete(jobId)
+  }
+}
+
+async function generateJobInsights(jobId: string): Promise<void> {
+  const [job] = await db
+    .update(jobs)
+    .set({ insightStatus: 'running', insightStartedAt: new Date(), insightAttempts: sql`${jobs.insightAttempts} + 1` })
+    .where(and(eq(jobs.id, jobId), eq(jobs.insightStatus, 'pending'), eq(jobs.status, 'completed')))
+    .returning()
+  if (!job) return
+
+  const segments = job.transcript?.segments ?? []
+  const language = job.transcript?.language ?? 'mixed'
+  const meetingAt = new Date(new Date(job.createdAt).getTime() - (job.durationSec ?? 0) * 1000)
+
+  try {
+    console.log(`[${jobId}] Background: Generating summary (attempt ${job.insightAttempts})...`)
+    await cacheJobStatus(jobId, { status: 'completed', progress: 75 })
+    const insights = await generateInsights(segments)
+
+    const updatedSpeakers = new Set(segments.map((s) => s.speaker))
+
+    await db
+      .update(jobs)
+      .set({
+        transcript: {
+          segments,
+          rawSegments: undefined,
+          polished: false,
+          speakerCount: updatedSpeakers.size,
+          summary: insights.summary,
+          language,
+        },
+        title: job.title || insights.title || null,
+      })
+      .where(eq(jobs.id, jobId))
+
+    await cacheJobStatus(jobId, { status: 'completed', progress: 100 })
+
+    await db.delete(actionItems).where(eq(actionItems.jobId, jobId))
+
+    if (insights.actionItems.length > 0 && job.isPrivate) {
+      const [owner] = await db
+        .select({ displayName: users.displayName, username: users.username })
+        .from(users)
+        .where(eq(users.id, job.userId))
+        .limit(1)
+      const ownerName = owner?.displayName ?? owner?.username ?? 'Saya'
+      const ownerKey = ownerName.trim().toLowerCase()
+
+      await db.insert(actionItems).values(
+        insights.actionItems.map((it, i) => {
+          const mentioned = it.owner.trim()
+          const task = mentioned && mentioned.toLowerCase() !== ownerKey ? `${it.task} (terkait ${mentioned})` : it.task
+          return {
+            id: nanoid(),
+            jobId,
+            owner: ownerName,
+            assigneeId: job.userId,
+            task,
+            due: it.due ?? null,
+            dueOn: parseDue(it.due, meetingAt),
+            confidence: it.confidence,
+            order: i,
+          }
+        })
+      )
+    }
+
+    if (insights.actionItems.length > 0 && !job.isPrivate) {
+      await db.insert(actionItems).values(
+        insights.actionItems.map((it, i) => ({
+          id: nanoid(),
+          jobId,
+          owner: it.owner,
+          task: it.task,
+          due: it.due ?? null,
+          dueOn: parseDue(it.due, meetingAt),
+          confidence: it.confidence,
+          order: i,
+        }))
+      )
+    }
+
+    await db.update(jobs).set({ insightStatus: 'done' }).where(eq(jobs.id, jobId))
+
+    if (insights.actionItems.length > 0 && !job.isPrivate) {
+      await sendDigests(job, insights.actionItems, insights.title)
+    }
+
+    if (segments.length > 0 && job.nativeTranscript === null) {
+      console.log(`[${jobId}] Background: Refining transcript...`)
+      try {
+        const r = await polishTranscript(segments)
+        const polishedSegments = r.polished
+        const rawSegments = r.raw
+        console.log(`[${jobId}] Background: Polish pass done (${rawSegments.length} -> ${polishedSegments.length} segments)`)
+
+        const finalSpeakers = new Set(polishedSegments.map((s) => s.speaker))
+
+        await db
+          .update(jobs)
+          .set({
+            transcript: {
+              segments: polishedSegments,
+              rawSegments,
+              polished: true,
+              speakerCount: finalSpeakers.size,
+              summary: insights.summary,
+              language,
+            },
+          })
+          .where(eq(jobs.id, jobId))
+      } catch (err) {
+        console.warn(`[${jobId}] Background polish failed, keeping raw:`, err)
+      }
+    }
+
+    await cacheJobStatus(jobId, { status: 'completed', progress: 100 })
+    console.log(`[${jobId}] Background: Processing complete`)
+  } catch (err) {
+    const bgMsg = err instanceof Error ? err.message : String(err)
+    const exhausted = job.insightAttempts >= MAX_INSIGHT_ATTEMPTS
+    console.error(`[${jobId}] Background processing failed (attempt ${job.insightAttempts}/${MAX_INSIGHT_ATTEMPTS}):`, bgMsg)
+    await db
+      .update(jobs)
+      .set(exhausted
+        ? { insightStatus: 'failed', errorMessage: `Peringatan: ${publicError(bgMsg, 'ringkasan dan tugas belum berhasil dibuat.')}` }
+        : { insightStatus: 'pending' })
+      .where(and(eq(jobs.id, jobId), eq(jobs.insightStatus, 'running')))
+  }
+}
+
+async function sendDigests(
+  job: typeof jobs.$inferSelect,
+  items: { owner: string; task: string; due?: string | null }[],
+  generatedTitle: string
+): Promise<void> {
+  const meetingAt = new Date(new Date(job.createdAt).getTime() - (job.durationSec ?? 0) * 1000)
+  const meetingTitle = job.title || generatedTitle || fallbackMeetingTitle(meetingAt)
+
+  type ResolvedUser = { email: string; displayName: string | null; ccEmails: string[] }
+  const ownerCache = new Map<string, ResolvedUser | null>()
+  const resolveOwner = async (name: string): Promise<ResolvedUser | null> => {
+    const cached = ownerCache.get(name)
+    if (cached !== undefined) return cached
+    const [row] = await db
+      .select({ email: users.email, displayName: users.displayName, ccEmails: users.ccEmails })
+      .from(users)
+      .where(sql`LOWER(COALESCE(${users.displayName}, ${users.username})) = ${name}`)
+      .limit(1)
+    const resolved: ResolvedUser | null = row?.email
+      ? { email: row.email, displayName: row.displayName, ccEmails: (row.ccEmails ?? []) as string[] }
+      : null
+    ownerCache.set(name, resolved)
+    return resolved
+  }
+
+  const bundles = new Map<string, { assigneeName: string; tasks: { taskTitle: string; due?: string | null }[] }>()
+
+  for (const item of items) {
+    const user = await resolveOwner(item.owner.trim().toLowerCase())
+    if (!user) continue
+
+    const assigneeName = user.displayName ?? item.owner
+    const recipients = [user.email, ...user.ccEmails.filter((cc) => cc !== user.email)]
+    for (const to of recipients) {
+      const bundle = bundles.get(to)
+      const task = { taskTitle: item.task, due: item.due ?? null }
+      if (bundle) bundle.tasks.push(task)
+      else bundles.set(to, { assigneeName, tasks: [task] })
+    }
+  }
+
+  for (const [to, bundle] of bundles) {
+    sendTaskDigest({
+      to,
+      tasks: bundle.tasks,
+      meetingTitle,
+      meetingAt,
+      jobId: job.id,
+      assigneeName: bundle.assigneeName,
+    }).catch((err) => console.warn(`[${job.id}] Email send failed for ${to}:`, err))
   }
 }

@@ -2,6 +2,7 @@ import { readConfig } from './config.js'
 import './languageDetect.js'
 import './recoveryStore.js'
 import { applyMeetEvent, applyUtterance, claimSelfVoice, nativeTranscript } from './meetTranscript.js'
+import { combineLines } from './transcriptBlocks.js'
 
 const ACTIVE_STATUSES = ['starting', 'recording', 'uploading', 'uploadFailed']
 const MENU_ID = 'mulaiRekapin'
@@ -18,6 +19,8 @@ const DISMISS_LANGUAGE_MS = 120000
 const MEETING_PATTERNS = ['https://meet.google.com/*', 'https://*.zoom.us/*', 'https://web.whatsapp.com/*', 'https://teams.microsoft.com/*', 'https://teams.live.com/*', 'https://teams.cloud.microsoft/*']
 const CAPTION_SOURCES = ['zoom', 'teams']
 const CAPTION_FRESH_MS = 45000
+const LIVE_QUIET_REFRESH_MS = 5000
+let liveQuietSentAt = 0
 const TEAMS_URL =/^https:\/\/teams\.(microsoft\.com|live\.com|cloud\.microsoft)\//
 
 const state = {
@@ -220,12 +223,126 @@ function persistNow() {
   chrome.storage.local.set({ liveState: { ...state } }).catch(() => {})
 }
 
+let linesSeq = 0
+let sentSignatures = []
+
+function lineSignature(line) {
+  return [line.text, line.speaker ?? '', line.participantId ?? '', line.version ?? '', line.final ? 1 : 0, line.chat ? 1 : 0,
+    line.identityResolved === false ? 0 : 1, line.at ?? '', line.endAt ?? '', line.startSec ?? '', line.endSec ?? ''].join('\u0001')
+}
+
+function linesDelta() {
+  const lines = state.lines ?? []
+  const signatures = lines.map(lineSignature)
+  const limit = Math.min(signatures.length, sentSignatures.length)
+  let from = 0
+  while (from < limit && sentSignatures[from] === signatures[from]) from++
+  sentSignatures = signatures
+  linesSeq += 1
+  return { seq: linesSeq, from, tail: lines.slice(from), total: lines.length }
+}
+
 function broadcast(urgent = true) {
   clearTimeout(broadcastTimer)
   broadcastTimer = null
-  chrome.runtime.sendMessage({ target: 'panel', type: 'state', state: { ...state } }).catch(() => {})
+  const { lines, ...rest } = state
+  chrome.runtime.sendMessage({ target: 'panel', type: 'state', state: rest, lines: linesDelta() }).catch(() => {})
+  if (state.liveShare?.token) scheduleLiveSharePush()
   if (urgent) persistNow()
   else if (!persistTimer) persistTimer = setTimeout(persistNow, PERSIST_MS)
+}
+
+const LIVE_SHARE_PUSH_MS = 4000
+const LIVE_SHARE_CHUNK = 500
+let liveSharePushTimer = null
+let liveSharePushing = false
+let liveShareSent = []
+let liveShareConfirmed = 0
+
+async function liveShareRequest(path, init = {}) {
+  const { apiBase } = await readConfig()
+  const response = await fetch(`${apiBase}/live-shares${path}`, {
+    credentials: 'include',
+    signal: AbortSignal.timeout(15000),
+    headers: { 'Content-Type': 'application/json' },
+    ...init,
+  })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(body.error || `Gagal (${response.status})`)
+  return body
+}
+
+function liveShareBlocks() {
+  return combineLines(state.lines ?? []).map((block) => ({ text: block.text, speaker: block.speaker ?? '', at: block.at, chat: block.chat || undefined }))
+}
+
+function scheduleLiveSharePush() {
+  if (liveSharePushTimer || liveSharePushing) return
+  liveSharePushTimer = setTimeout(() => {
+    liveSharePushTimer = null
+    void pushLiveShare()
+  }, LIVE_SHARE_PUSH_MS)
+}
+
+async function pushLiveShare() {
+  const token = state.liveShare?.token
+  if (!token || liveSharePushing) return
+  liveSharePushing = true
+  try {
+    const blocks = liveShareBlocks()
+    const signatures = blocks.map((block) => `${block.speaker}\u0001${block.text}\u0001${block.at}`)
+    let from = 0
+    const limit = Math.min(signatures.length, liveShareSent.length)
+    while (from < limit && liveShareSent[from] === signatures[from]) from++
+    from = Math.min(from, liveShareConfirmed)
+    if (from === blocks.length && liveShareConfirmed === blocks.length) return
+    for (let start = from; start < blocks.length || start === from; start += LIVE_SHARE_CHUNK) {
+      const result = await liveShareRequest(`/${encodeURIComponent(token)}/lines`, {
+        method: 'PUT',
+        body: JSON.stringify({ from: start, total: blocks.length, lines: blocks.slice(start, start + LIVE_SHARE_CHUNK) }),
+      })
+      liveShareConfirmed = Number.isInteger(result.total) ? result.total : Math.min(blocks.length, start + LIVE_SHARE_CHUNK)
+      if (start + LIVE_SHARE_CHUNK >= blocks.length) break
+    }
+    liveShareSent = signatures
+  } catch (err) {
+    if (/tidak ditemukan|ditutup/i.test(String(err?.message))) {
+      state.liveShare = null
+      broadcast()
+    }
+  } finally {
+    liveSharePushing = false
+  }
+}
+
+async function startLiveShare() {
+  if (state.status !== 'recording' && state.status !== 'starting') return { ok: false, error: 'Mulai rekaman dulu sebelum membagikan transkrip.' }
+  if (state.source === 'whatsapp') return { ok: false, error: 'Panggilan WhatsApp bersifat privat dan tidak bisa dibagikan.' }
+  if (state.liveShare?.token) return { ok: true, url: state.liveShare.url }
+  try {
+    const { appBase } = await readConfig()
+    const created = await liveShareRequest('', { method: 'POST', body: JSON.stringify({ title: titleHint(), source: state.source }) })
+    liveShareSent = []
+    liveShareConfirmed = 0
+    state.liveShare = { token: created.token, url: `${appBase}${created.path}` }
+    broadcast()
+    void pushLiveShare()
+    return { ok: true, url: state.liveShare.url }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Tautan belum bisa dibuat. Coba lagi.' }
+  }
+}
+
+async function endLiveShare(revoke) {
+  const token = state.liveShare?.token
+  if (!token) return { ok: true }
+  clearTimeout(liveSharePushTimer)
+  liveSharePushTimer = null
+  if (!revoke) await pushLiveShare().catch(() => {})
+  state.liveShare = null
+  broadcast()
+  await liveShareRequest(`/${encodeURIComponent(token)}${revoke ? '' : '/end'}`, { method: revoke ? 'DELETE' : 'POST' }).catch(() => {})
+  return { ok: true }
 }
 
 function reset() {
@@ -234,6 +351,9 @@ function reset() {
   state.sessionId = null
   state.recoveryId = null
   state.captionAt = null
+  state.tabTitles = []
+  state.liveShare = null
+  liveQuietSentAt = 0
   state.meetParticipants = {}
   state.meetStreams = {}
   state.utteranceMeeting = null
@@ -314,6 +434,7 @@ async function startRecording(tabId, language, source, mode, skipInsights) {
   state.tabId = tabId
   state.source = source ?? 'upload'
   state.sessionId = crypto.randomUUID()
+  chrome.tabs?.get?.(tabId)?.then((tab) => { if (state.tabId === tabId) noteTabTitle(tab?.title) }).catch(() => {})
   state.language = typeof language === 'string' ? language : null
   state.meetSelfName = selfName
   broadcast()
@@ -376,6 +497,7 @@ async function cancelRecording() {
     return { ok: false, error: 'Tidak ada sesi aktif' }
   }
   await chrome.runtime.sendMessage({ target: 'offscreen', type: 'cancelCapture' }).catch(() => null)
+  await endLiveShare(true)
   const background = state.background
   reset()
   state.background = background
@@ -451,6 +573,7 @@ async function stopRecording() {
   state.live = null
   state.upload = null
   broadcast()
+  void endLiveShare(false)
 
   try {
     const response = await chrome.runtime.sendMessage({
@@ -459,6 +582,7 @@ async function stopRecording() {
       attendance: state.attendance ?? [],
       speakerTimeline: buildSpeakerTimeline(),
       nativeTranscript: state.source === 'meet' ? nativeTranscript(state) : undefined,
+      titleHint: titleHint(),
     })
     if (!response || !response.ok) {
       throw new Error(response && response.error ? response.error : 'Gagal menyimpan rekaman')
@@ -504,6 +628,7 @@ async function recoverUpload() {
       attendance: state.attendance ?? [],
       speakerTimeline: buildSpeakerTimeline(),
       nativeTranscript: state.source === 'meet' ? nativeTranscript(state) : undefined,
+      titleHint: titleHint(),
     })
   } catch {
     response = null
@@ -774,9 +899,16 @@ function handleCaptionFeed(message, sender) {
   if (changed) {
     if (!captionsFlowing()) state.partial = ''
     state.captionAt = Date.now()
+    quietLiveAudio(state.captionAt)
     broadcastSoon()
   }
   return { ok: true }
+}
+
+function quietLiveAudio(now) {
+  if (now - liveQuietSentAt < LIVE_QUIET_REFRESH_MS) return
+  liveQuietSentAt = now
+  chrome.runtime.sendMessage({ target: 'offscreen', type: 'quietLive', until: now + CAPTION_FRESH_MS }).catch(() => {})
 }
 
 async function handleServiceMessage(message, sender) {
@@ -825,7 +957,7 @@ async function handleServiceMessage(message, sender) {
   if (message.type === 'captionFeed') return handleCaptionFeed(message, sender)
   if (['speaker', 'roster', 'watcher', 'captions'].includes(message.type)
     && (sender?.tab?.id !== state.tabId || state.source === 'meet' || state.status !== 'recording' || state.paused)) return { ok: false }
-  if (message.type === 'getState') return { ...state }
+  if (message.type === 'getState') return { ...state, linesSeq }
   if (message.type === 'speaker') {
     noteSpeaker(message.name ?? null)
     return { ok: true }
@@ -863,6 +995,8 @@ async function handleServiceMessage(message, sender) {
   if (message.type === 'retryUpload') return retryUpload()
   if (message.type === 'discardUpload') return discardUpload()
   if (message.type === 'recoverUpload') return recoverUpload()
+  if (message.type === 'startLiveShare' && !sender?.tab) return startLiveShare()
+  if (message.type === 'stopLiveShare' && !sender?.tab) return endLiveShare(true)
   if (message.type === 'reset') {
     if (state.status === 'interrupted') dropStoredRecovery()
     reset()
@@ -872,6 +1006,24 @@ async function handleServiceMessage(message, sender) {
   }
   return { ok: false, error: 'Perintah tidak dikenal' }
 }
+
+function noteTabTitle(title) {
+  if (typeof title !== 'string' || !title.trim()) return
+  const clean = title.trim().slice(0, 120)
+  const known = state.tabTitles ?? []
+  if (known.includes(clean) || known.length >= 5) return
+  state.tabTitles = [...known, clean]
+}
+
+function titleHint() {
+  const titles = state.tabTitles ?? []
+  return titles.length > 0 ? titles.join(' | ').slice(0, 300) : undefined
+}
+
+chrome.tabs?.onUpdated?.addListener((tabId, changeInfo) => {
+  if (tabId !== state.tabId || (state.status !== 'recording' && state.status !== 'starting')) return
+  noteTabTitle(changeInfo.title)
+})
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== MENU_ID || !tab?.id) return

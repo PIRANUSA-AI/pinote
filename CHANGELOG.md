@@ -3,6 +3,15 @@
 Tulis rilis terbaru paling atas. Setiap rilis diawali baris `## versi · tanggal`, lalu setiap perubahan diawali `* `.
 
 ## 0.16.0 · 24 September 2026
+* Tanya rapat ini: ajukan pertanyaan tentang rapat di halaman hasilnya, jawabannya disertai kutipan yang bisa diklik untuk melompat ke bagian transkrip dan audionya
+* Bagikan transkrip langsung lewat tautan, supaya rekan bisa mengikuti rapat dari HP tanpa login. Tautan tertutup otomatis saat rapat selesai
+* Tenggat tugas kini dibaca sebagai tanggal sungguhan, lengkap dengan tanda hari ini, besok, dan lewat tenggat
+* Keputusan dan pertanyaan di transkrip ditandai, dan bisa disaring dengan satu klik
+* Rangkuman mingguan lewat email setiap Senin pagi: tugas yang lewat tenggat, yang jatuh tempo minggu ini, dan rapat minggu lalu
+* Statistik rapat 30 hari di Profil: waktu bicara dan jumlah tugas per orang
+* Judul rapat diambil dari nama rapat di Meet, Zoom, dan Teams bila tersedia
+* Pintasan keyboard di panel: Spasi untuk jeda, F untuk mode fokus, dan garis miring untuk mencari
+* Ringkasan dan tugas tidak lagi hilang kalau server sedang diperbarui saat rapat diproses
 * Mendukung rapat Microsoft Teams di browser
 * Email tugas didesain ulang: judul rapat yang sebenarnya, tanggal dan jam rapat, daftar tugas yang rapi, dan tombol langsung ke hasil rapat
 * Di Zoom web dan Teams web, transkrip langsung diambil dari teks otomatis rapat kalau fitur itu dinyalakan, lengkap dengan pembicaranya, jadi kalimat jauh lebih akurat

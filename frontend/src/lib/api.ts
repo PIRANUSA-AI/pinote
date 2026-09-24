@@ -98,6 +98,7 @@ export interface ActionItem {
   owner: string
   task: string
   due: string | null
+  dueOn?: string | null
   confidence: number
   done: boolean
   order: number
@@ -202,6 +203,7 @@ export interface TaskGroupItem {
   assigneeId: string | null
   task: string
   due: string | null
+  dueOn?: string | null
   confidence: number
   done: boolean
   order: number

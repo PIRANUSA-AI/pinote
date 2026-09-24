@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { db } from '../db/client.js'
 import { actionItems, jobs, users } from '../db/schema.js'
 import type { AppEnv } from '../middleware/auth.js'
+import { parseDue } from '../lib/dueDate.js'
 
 export const tasksRouter = new Hono<AppEnv>()
 
@@ -35,6 +36,7 @@ tasksRouter.get('/:token', async (c) => {
       owner: actionItems.owner,
       task: actionItems.task,
       due: actionItems.due,
+      dueOn: actionItems.dueOn,
       confidence: actionItems.confidence,
       done: actionItems.done,
       order: actionItems.order,
@@ -134,7 +136,10 @@ tasksRouter.patch('/:token/item/:itemId', async (c) => {
   const patch: Record<string, unknown> = {}
   if (parsed.data.done !== undefined) patch.done = parsed.data.done
   if (parsed.data.task !== undefined) patch.task = parsed.data.task
-  if (parsed.data.due !== undefined) patch.due = parsed.data.due
+  if (parsed.data.due !== undefined) {
+    patch.due = parsed.data.due
+    patch.dueOn = parseDue(parsed.data.due, new Date())
+  }
   if (Object.keys(patch).length === 0) return c.json({ ok: true, unchanged: true })
 
   // Pin assigneeId the first time the holder interacts with a name-matched item,

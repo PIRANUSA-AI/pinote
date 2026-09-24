@@ -49,7 +49,7 @@
 
         <div class="stateRow">
           <div id="tabState" class="tabState"></div>
-          <button id="focusToggle" class="miniButton focusToggle" type="button" title="Mode fokus" aria-label="Kecilkan panel ke mode fokus" hidden>
+          <button id="focusToggle" class="miniButton focusToggle" type="button" title="Mode fokus (F)" aria-label="Kecilkan panel ke mode fokus" aria-keyshortcuts="F" hidden>
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 15l6-6 6 6"></path>
             </svg>
@@ -57,7 +57,7 @@
         </div>
 
         <div id="focusBar" class="focusBar" hidden>
-          <button id="focusExpand" class="focusClock" type="button" title="Tampilkan detail" aria-label="Tampilkan detail rekaman">
+          <button id="focusExpand" class="focusClock" type="button" title="Tampilkan detail (F)" aria-label="Tampilkan detail rekaman" aria-keyshortcuts="F">
             <span class="focusDot"></span>
             <span id="focusTime">00:00</span>
             <svg class="focusChevron" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -89,6 +89,23 @@
 
         <div id="talkRow" class="talkRow" hidden></div>
 
+        <div id="shareRow" class="shareRow" hidden>
+          <button id="shareStart" class="shareStart" type="button">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9.5 14.5l5-5"></path>
+              <path d="M11 6.5l1.2-1.2a4 4 0 0 1 5.6 5.6L16.6 12"></path>
+              <path d="M13 17.5l-1.2 1.2a4 4 0 0 1-5.6-5.6L7.4 12"></path>
+            </svg>
+            <span>Bagikan transkrip langsung</span>
+          </button>
+          <div id="shareActive" class="shareActive" hidden>
+            <span class="shareLive" aria-hidden="true"></span>
+            <span class="shareText">Transkrip bisa diikuti lewat tautan</span>
+            <button id="shareCopy" class="shareAction" type="button">Salin tautan</button>
+            <button id="shareStop" class="shareAction quiet" type="button">Berhenti</button>
+          </div>
+        </div>
+
         <div id="languageRow" class="startHint" hidden></div>
 
         <div id="languageSuggest" class="suggestBar" role="status" hidden>
@@ -118,7 +135,7 @@
 
         <div class="actionRow">
           <button id="cancelButton" class="secondaryAction danger" type="button" hidden>Batalkan</button>
-          <button id="pauseButton" class="secondaryAction" type="button" hidden>Jeda</button>
+          <button id="pauseButton" class="secondaryAction" type="button" title="Jeda (Spasi)" aria-keyshortcuts="Space" hidden>Jeda</button>
           <button id="recordButton" class="primaryAction grow" type="button">
             <span id="recordDot" class="recordDot" hidden></span>
             <span id="recordLabel">Mulai Rekapin</span>
@@ -175,7 +192,7 @@
                   <button id="exportDownload" class="exportItem" type="button" role="menuitem">Unduh file .md</button>
                 </div>
               </div>
-              <button id="searchToggle" class="miniButton" type="button" title="Cari di transkrip" aria-label="Cari di transkrip">
+              <button id="searchToggle" class="miniButton" type="button" title="Cari di transkrip (/)" aria-label="Cari di transkrip" aria-keyshortcuts="/">
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
                   <circle cx="11" cy="11" r="7"></circle>
                   <path d="M20 20l-3.6-3.6"></path>

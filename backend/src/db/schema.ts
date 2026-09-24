@@ -1,4 +1,4 @@
-import { pgTable, text, boolean, timestamp, bigint, integer, real, jsonb, index, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, text, boolean, timestamp, bigint, integer, real, jsonb, index, uniqueIndex, date } from 'drizzle-orm/pg-core'
 
 export const users = pgTable(
   'users',
@@ -77,8 +77,12 @@ export const jobs = pgTable(
     startedAt: timestamp('started_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    insightStatus: text('insight_status').$type<InsightStatus>().notNull().default('done'),
+    insightAttempts: integer('insight_attempts').notNull().default(0),
+    insightStartedAt: timestamp('insight_started_at', { withTimezone: true }),
   },
   (t) => ({
+    insightIdx: index('jobs_insight_status_idx').on(t.insightStatus),
     userIdx: index('jobs_user_idx').on(t.userId),
     createdIdx: index('jobs_created_idx').on(t.createdAt),
     shareTokenIdx: uniqueIndex('jobs_share_token_idx').on(t.shareToken),
@@ -94,6 +98,8 @@ export type CacheEntry = typeof cacheEntries.$inferSelect
 export type ReminderRow = typeof reminders.$inferSelect
 
 export type JobStatus = 'pending' | 'uploading' | 'queued' | 'transcribing' | 'completed' | 'failed' | 'cancelled'
+
+export type InsightStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
 
 // Generic key/value cache with TTL. Replaces what Upstash Redis used to do
 // (job progress, user stats, worker heartbeat, login rate-limit counters).
@@ -173,6 +179,7 @@ export const actionItems = pgTable(
     assigneeId: text('assignee_id').references(() => users.id, { onDelete: 'set null' }),
     task: text('task').notNull(),
     due: text('due_date'),
+    dueOn: date('due_on'),
     confidence: real('confidence').notNull().default(1),
     done: boolean('done').notNull().default(false),
     order: integer('order').notNull().default(0),

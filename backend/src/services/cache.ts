@@ -5,7 +5,7 @@ import { cacheEntries } from '../db/schema.js'
 const STATUS_TTL_SEC = 60 * 30
 const STATS_TTL_SEC = 300
 
-async function cacheSet(key: string, value: unknown, ttlSec: number): Promise<void> {
+export async function cacheSet(key: string, value: unknown, ttlSec: number): Promise<void> {
   try {
     const expiresAt = new Date(Date.now() + ttlSec * 1000)
     await db

@@ -5,6 +5,7 @@ import { ArrowLeft, Check, WarningCircle, ListChecks } from '@phosphor-icons/rea
 import { ApiError, api, type MyTasksResponse, type TaskGroupItem } from '../lib/api'
 import { LoadingScreen } from '../components/LoadingScreen'
 import { BrandMark } from '../components/Brand'
+import { DueBadge } from '../components/DueBadge'
 import { formatRelativeTime } from '../lib/format'
 
 const CONFIDENCE_THRESHOLD = 0.55
@@ -158,11 +159,7 @@ export default function MyTasks() {
                           {it.task}
                         </p>
                         <div className="flex items-center gap-2 mt-1 flex-wrap">
-                          {it.due && (
-                            <span className="text-[11px] text-ink-muted tabular">
-                              Tenggat: {it.due}
-                            </span>
-                          )}
+                          <DueBadge due={it.due} dueOn={it.dueOn} done={it.done} />
                           {it.confidence < CONFIDENCE_THRESHOLD && (
                             <span className="inline-flex items-center gap-1 text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">
                               <WarningCircle size={10} weight="fill" />

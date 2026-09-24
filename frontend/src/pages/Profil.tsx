@@ -26,12 +26,14 @@ import { ApiError, api, type UserStats, type Reminder } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../components/Toast'
 import { ExtensionCard } from '../components/ExtensionPromo'
+import { DueBadge } from '../components/DueBadge'
+import { MeetingStats } from '../components/MeetingStats'
 import { formatDuration, formatRelativeTime } from '../lib/format'
 
 const USD_TO_IDR = 16_000
 
 interface PlaygroundTask {
-  id: string; owner: string; task: string; due: string | null; done: boolean; order: number; createdAt: string
+  id: string; owner: string; task: string; due: string | null; dueOn?: string | null; done: boolean; order: number; createdAt: string
 }
 
 export default function Profil() {
@@ -354,7 +356,9 @@ export default function Profil() {
                 color="violet"
               />
             </motion.div>
-          ) : (
+          ) : null}
+          {stats && <MeetingStats />}
+          {stats ? null : (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
               {[0, 1, 2, 3].map((i) => (
                 <div key={i} className="card p-4">
@@ -416,7 +420,7 @@ export default function Profil() {
                     </span>
                     <div className="flex-1 min-w-0">
                       <p className={`text-sm ${t.done ? 'line-through text-slate-400' : 'text-ink'}`}>{t.task}</p>
-                      {t.due && <span className="text-[11px] text-ink-muted">Tenggat: {t.due}</span>}
+                      <DueBadge due={t.due} dueOn={t.dueOn} done={t.done} />
                     </div>
                   </li>
                 ))}

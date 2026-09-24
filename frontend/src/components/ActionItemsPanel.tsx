@@ -13,6 +13,7 @@ import type { ActionItem, ActionItemChange } from '../lib/api'
 import { api } from '../lib/api'
 import { speakerStyle } from '../lib/format'
 import { useToast } from '../components/Toast'
+import { DueBadge } from './DueBadge'
 
 interface Props {
   jobId: string
@@ -277,11 +278,7 @@ export function ActionItemsPanel({
                               >
                                 {item.task}
                               </span>
-                              {item.due && (
-                                <span className="inline-flex items-center text-[11px] text-ink-muted bg-slate-100 px-1.5 py-0.5 rounded">
-                                  {item.due}
-                                </span>
-                              )}
+                              <DueBadge due={item.due} dueOn={item.dueOn} done={item.done} />
                               {lowConf && (
                                 <span className="inline-flex items-center gap-1 text-[10px] text-amber-700 bg-amber-100 border border-amber-200 px-1.5 py-0.5 rounded">
                                   <WarningCircle size={10} weight="fill" />

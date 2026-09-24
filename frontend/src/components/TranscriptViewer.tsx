@@ -4,6 +4,12 @@ import { Copy, DownloadSimple, MagnifyingGlass, Check } from '@phosphor-icons/re
 import type { ActionItem, TranscriptPayload } from '../lib/api'
 import { speakerColor, parseTimestamp } from '../lib/format'
 import { ActionItemsPanel } from './ActionItemsPanel'
+import { MARK_LABELS, segmentMarks, type MarkKind } from '../lib/highlights'
+
+const MARK_TONES: Record<MarkKind, string> = {
+  decision: 'bg-emerald-50 text-emerald-800',
+  question: 'bg-amber-50 text-amber-800',
+}
 
 interface Props {
   transcript: TranscriptPayload
@@ -41,15 +47,23 @@ export function TranscriptViewer({
   const hasRaw = Boolean(transcript.rawSegments && transcript.rawSegments.length > 0)
   const activeSegments = showRaw && hasRaw ? transcript.rawSegments! : transcript.segments
 
-  const filtered = useMemo(() => {
-    if (!query.trim()) return activeSegments
-    const q = query.toLowerCase()
-    return activeSegments.filter(
-      (s) => s.text.toLowerCase().includes(q) || s.speaker.toLowerCase().includes(q)
-    )
-  }, [activeSegments, query])
+  const marks = useMemo(() => activeSegments.map((s) => segmentMarks(s.text)), [activeSegments])
+  const markCounts = useMemo(() => {
+    const counts: Record<MarkKind, number> = { decision: 0, question: 0 }
+    for (const set of marks) for (const kind of set) counts[kind] += 1
+    return counts
+  }, [marks])
+  const [markFilter, setMarkFilter] = useState<MarkKind | null>(null)
 
-  useEffect(() => { setSearchIdx(0) }, [query])
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return activeSegments
+      .map((seg, index) => ({ seg, index }))
+      .filter(({ seg, index }) => !markFilter || marks[index]?.has(markFilter))
+      .filter(({ seg }) => !q || seg.text.toLowerCase().includes(q) || seg.speaker.toLowerCase().includes(q))
+  }, [activeSegments, query, markFilter, marks])
+
+  useEffect(() => { setSearchIdx(0) }, [query, markFilter])
 
   useEffect(() => {
     if (audioCurrentTime === undefined || audioCurrentTime <= 0 || filtered.length === 0) {
@@ -216,6 +230,23 @@ export function TranscriptViewer({
             </button>
           </div>
         </div>
+        {(markCounts.decision > 0 || markCounts.question > 0) && (
+          <div className="flex items-center gap-1.5 mt-2 flex-wrap" role="group" aria-label="Tampilkan bagian tertentu">
+            {(['decision', 'question'] as const).filter((kind) => markCounts[kind] > 0).map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                aria-pressed={markFilter === kind}
+                onClick={() => setMarkFilter((current) => (current === kind ? null : kind))}
+                className={`text-[12px] font-medium rounded-full px-2.5 py-1 border transition-colors tabular ${
+                  markFilter === kind ? 'bg-navy text-white border-navy' : 'bg-white text-ink-muted border-slate-200 hover:border-slate-300 hover:text-navy'
+                }`}
+              >
+                {MARK_LABELS[kind]} {markCounts[kind]}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="space-y-3">
@@ -224,15 +255,16 @@ export function TranscriptViewer({
             Tidak ada hasil untuk "{query}"
           </p>
         ) : (
-          filtered.map((seg, i) => (
+          filtered.map(({ seg, index }, i) => (
             <motion.div
-              key={i}
+              key={index}
+              id={!(showRaw && hasRaw) ? `seg-${index}` : undefined}
               ref={(el) => { segRefs.current[i] = el }}
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: Math.min(i * 0.02, 0.3) }}
               className={`group rounded-2xl border transition-all overflow-hidden ${
-                i === activeIdx ? 'border-brand bg-brand-soft/50 shadow-sm ring-1 ring-brand/20' : 'border-slate-200 bg-white hover:border-slate-300'
+                index === activeIdx ? 'border-brand bg-brand-soft/50 shadow-sm ring-1 ring-brand/20' : 'border-slate-200 bg-white hover:border-slate-300'
               }`}
             >
               <div className="grid sm:grid-cols-[auto_1fr] gap-3 sm:gap-5 p-4 sm:p-5">
@@ -246,6 +278,11 @@ export function TranscriptViewer({
                     {seg.start}
                     <span className="hidden sm:inline"> → {seg.end}</span>
                   </span>
+                  {[...(marks[index] ?? [])].map((kind) => (
+                    <span key={kind} className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold ${MARK_TONES[kind]}`}>
+                      {MARK_LABELS[kind]}
+                    </span>
+                  ))}
                 </div>
                 <p className="text-[15px] leading-relaxed text-ink">{highlight(seg.text, query)}</p>
               </div>

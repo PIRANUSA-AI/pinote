@@ -5,6 +5,7 @@ import { ArrowLeft, ArrowClockwise, LockSimple, ShareNetwork, Trash, WarningCirc
 import { ApiError, api, type ActionItem, type JobDetail } from '../lib/api'
 import { TranscriptViewer } from '../components/TranscriptViewer'
 import { ActionItemsPanel } from '../components/ActionItemsPanel'
+import { AskMeeting } from '../components/AskMeeting'
 import { AudioPlayer } from '../components/AudioPlayer'
 import { MiniPlayer } from '../components/MiniPlayer'
 import { ConfirmModal } from '../components/ConfirmModal'
@@ -32,6 +33,20 @@ export default function Job() {
   const { toast } = useToast()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [delForce, setDelForce] = useState(false)
+
+  const jumpToSegment = (index: number, seconds: number) => {
+    const audio = audioRef.current
+    if (audio && Number.isFinite(seconds)) {
+      audio.currentTime = Math.max(0, seconds)
+      void audio.play().catch(() => {})
+      return
+    }
+    const row = document.getElementById(`seg-${index}`)
+    if (!row) return
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    row.classList.add('ring-2', 'ring-brand/40')
+    setTimeout(() => row.classList.remove('ring-2', 'ring-brand/40'), 1600)
+  }
 
   useEffect(() => {
     if (!id || initial?.status !== 'completed') return
@@ -252,7 +267,8 @@ export default function Job() {
                 />
               </div>
               <div className="mt-6 lg:mt-0 lg:block space-y-4">
-                <div className="lg:sticky lg:top-20">
+                <div className="lg:sticky lg:top-20 space-y-4">
+                  <AskMeeting jobId={job.id} onJump={jumpToSegment} />
                   <ActionItemsPanel
                     jobId={job.id}
                     actionItems={job.actionItems}

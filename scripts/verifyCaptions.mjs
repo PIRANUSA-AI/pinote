@@ -68,9 +68,10 @@ const service = vm.createContext({
     sidePanel: { setPanelBehavior: async () => {} },
     storage: { local: { remove: async () => {}, get: async () => ({}), set: async () => {} }, onChanged: noopEvent },
     contextMenus: { onClicked: noopEvent }, commands: { onCommand: noopEvent },
-    runtime: { onInstalled: noopEvent, onMessage: noopEvent, sendMessage: async () => {} },
+    runtime: { onInstalled: noopEvent, onMessage: noopEvent, sendMessage: async (message) => { if (message?.target === 'offscreen') offscreenMessages.push(message) } },
   },
 })
+const offscreenMessages = []
 vm.runInContext(readFileSync(new URL('../extension/languageDetect.js', import.meta.url), 'utf8'), service)
 vm.runInContext(readFileSync(new URL('../extension/background.js', import.meta.url), 'utf8').replace(/^import .*\r?\n/gm, ''), service)
 await vm.runInContext('ready', service)
@@ -97,6 +98,9 @@ assert.equal(JSON.stringify(run('state.attendance')), '["Yoel Andreas"]')
 
 await send({ event: 'utterances', utterances: [utterance('2', '1', 'Halo dari Budi.', 'caption:avatar:budi')] })
 assert.equal(run('state.lines.length'), 2)
+const quiet = offscreenMessages.filter((m) => m.type === 'quietLive')
+assert.equal(quiet.length, 1, 'Flowing captions ask the offscreen page to stop streaming audio, at most every few seconds')
+assert.ok(quiet[0].until > Date.now() + 40000, 'The quiet window expires by itself so audio resumes if captions stop')
 
 run("handleOffscreenEvent({ type: 'liveFinal', text: 'teks dari audio tab', speakerSource: 'tab' })")
 assert.equal(run('state.lines.length'), 2, 'While captions flow, audio transcription does not add duplicate lines')
@@ -116,5 +120,33 @@ assert.equal((await send({ event: 'utterances', utterances: [utterance('9', '1',
 
 const blocks = combineLines(run('state.lines'))
 assert.ok(blocks.length >= 2)
+
+let offscreenListener = null
+let clockNow = 1_000_000
+const socketSends = []
+const offscreen = vm.createContext({
+  Date: { now: () => clockNow },
+  URL, Int16Array, ArrayBuffer, JSON, Math, Number, String, Map, Promise, atob, btoa,
+  WebSocket: { OPEN: 1 },
+  setTimeout: () => 0,
+  clearTimeout: () => {},
+  chrome: { runtime: { onConnect: noopEvent, onMessage: { addListener: (fn) => { offscreenListener = fn } }, sendMessage: async () => {}, getURL: (p) => p } },
+})
+vm.runInContext(readFileSync(new URL('../extension/offscreen.js', import.meta.url), 'utf8'), offscreen)
+vm.runInContext("capture = { source: 'zoom', liveQuietUntil: 0, socket: { readyState: 1, send: (d) => socketSends.push(d) } }", Object.assign(offscreen, { socketSends }))
+const reply = (message) => {
+  let answer = null
+  offscreenListener({ target: 'offscreen', ...message }, {}, (value) => { answer = value })
+  return answer
+}
+assert.equal(reply({ type: 'quietLive', until: clockNow + 45000 }).ok, true)
+assert.equal(vm.runInContext('capture.liveQuietUntil', offscreen), clockNow + 45000)
+assert.equal(socketSends.length, 1, 'Going quiet flushes the sentence in progress once')
+reply({ type: 'quietLive', until: clockNow + 50000 })
+assert.equal(socketSends.length, 1, 'Refreshing the quiet window does not flush again')
+assert.equal(reply({ type: 'quietLive', until: clockNow + 999999 }).ok, true)
+assert.equal(vm.runInContext('capture.liveQuietUntil', offscreen), clockNow + 60000, 'The quiet window is capped')
+vm.runInContext("capture.source = 'meet'", offscreen)
+assert.equal(reply({ type: 'quietLive', until: clockNow + 1000 }).ok, false, 'Meet sessions are never quieted')
 
 console.log('PASS: page caption tracking with revisions, scrolling, long monologues, placeholders, late names, and the service caption feed (synthetic fixtures).')
