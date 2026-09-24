@@ -47,7 +47,37 @@
           </div>
         </div>
 
-        <div id="tabState" class="tabState"></div>
+        <div class="stateRow">
+          <div id="tabState" class="tabState"></div>
+          <button id="focusToggle" class="miniButton focusToggle" type="button" title="Mode fokus" aria-label="Kecilkan panel ke mode fokus" hidden>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6 15l6-6 6 6"></path>
+            </svg>
+          </button>
+        </div>
+
+        <div id="focusBar" class="focusBar" hidden>
+          <button id="focusExpand" class="focusClock" type="button" title="Tampilkan detail" aria-label="Tampilkan detail rekaman">
+            <span class="focusDot"></span>
+            <span id="focusTime">00:00</span>
+            <svg class="focusChevron" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6"></path>
+            </svg>
+          </button>
+          <div class="focusActions">
+            <button id="focusCancel" class="roundAction cancel" type="button" title="Batalkan" aria-label="Batalkan rekaman">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M6 6l12 12M18 6L6 18"></path>
+              </svg>
+            </button>
+            <button id="focusPause" class="roundAction pause" type="button" title="Jeda" aria-label="Jeda rekaman"></button>
+            <button id="focusFinish" class="roundAction finish" type="button" title="Selesai" aria-label="Selesai dan kirim rekaman">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M5 12.5l4.5 4.5L19 7.5"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
 
         <div id="bgUpload" class="bgUpload" hidden></div>
 
@@ -108,6 +138,7 @@
         </div>
 
         <div id="recoveryRow" class="actionRow" hidden>
+          <button id="recoverUpload" class="primaryAction grow" type="button" hidden>Kirim rekaman</button>
           <button id="copyTranscript" class="secondaryAction grow" type="button">Salin transkrip</button>
           <button id="discardSession" class="secondaryAction" type="button">Buang</button>
         </div>
@@ -124,6 +155,26 @@
             <span class="transcriptTitle">Transkrip langsung</span>
             <div class="headRight">
               <span id="lineCount" class="lineCount"></span>
+              <button id="actionToggle" class="actionChip" type="button" aria-expanded="false" aria-controls="actionPanel" title="Tugas yang terdengar" hidden>
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="4" y="4" width="16" height="16" rx="4"></rect>
+                  <path d="M8.5 12.2l2.4 2.4 4.6-4.9"></path>
+                </svg>
+                <span id="actionCount"></span>
+              </button>
+              <div id="exportWrap" class="exportWrap" hidden>
+                <button id="exportToggle" class="miniButton" type="button" title="Ekspor transkrip" aria-label="Ekspor transkrip" aria-haspopup="menu" aria-expanded="false">
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 4v11"></path>
+                    <path d="M7.5 10.5L12 15l4.5-4.5"></path>
+                    <path d="M5 19h14"></path>
+                  </svg>
+                </button>
+                <div id="exportMenu" class="exportMenu" role="menu" hidden>
+                  <button id="exportCopy" class="exportItem" type="button" role="menuitem">Salin sebagai Markdown</button>
+                  <button id="exportDownload" class="exportItem" type="button" role="menuitem">Unduh file .md</button>
+                </div>
+              </div>
               <button id="searchToggle" class="miniButton" type="button" title="Cari di transkrip" aria-label="Cari di transkrip">
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
                   <circle cx="11" cy="11" r="7"></circle>
@@ -153,10 +204,14 @@
             </button>
           </div>
         </div>
+        <section id="actionPanel" class="actionPanel" aria-label="Tugas yang terdengar" hidden>
+          <p class="actionHint">Perkiraan dari percakapan. Daftar final ada di ringkasan setelah rapat.</p>
+          <ol id="actionList" class="actionList"></ol>
+        </section>
         <div id="emptyState" class="emptyState">
           <div class="emptyMark"></div>
           <p class="emptyTitle">Belum ada yang terdengar</p>
-          <p class="hint">Buka tab Google Meet, Zoom web, atau WhatsApp Web, lalu tekan Mulai Rekapin.</p>
+          <p class="hint">Buka tab Google Meet, Zoom web, Microsoft Teams web, atau WhatsApp Web, lalu tekan Mulai Rekapin.</p>
         </div>
         <div id="liveLines" class="liveLines" hidden></div>
         <button id="jumpLatest" class="jumpLatest" type="button" hidden>Ke terbaru</button>

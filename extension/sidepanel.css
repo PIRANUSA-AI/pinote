@@ -260,6 +260,157 @@ body {
   padding: 11px 13px;
 }
 
+.stateRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stateRow .tabState {
+  flex: 1;
+  min-width: 0;
+}
+
+.focusToggle {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+}
+
+.sheet.focus {
+  padding: 8px 8px 8px 8px;
+}
+
+.sheet.focus > :not(.focusBar):not(.errorBox):not(.suggestBar):not(#watcherHint) {
+  display: none !important;
+}
+
+.focusBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.focusClock {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px 7px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: #fef2f2;
+  color: #991b1b;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.focusClock:hover {
+  background: #fee2e2;
+}
+
+.focusClock.paused {
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.focusClock.warn {
+  background: #fff7e6;
+  color: #92400e;
+}
+
+.focusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #dc2626;
+  animation: pulseRed 1.5s ease-out infinite;
+}
+
+.focusClock.paused .focusDot,
+.focusClock.warn .focusDot {
+  background: #d97706;
+  animation: none;
+}
+
+.focusChevron {
+  opacity: 0.55;
+}
+
+@keyframes pulseRed {
+  0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.5); }
+  70% { box-shadow: 0 0 0 6px rgba(220, 38, 38, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
+}
+
+.focusActions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.roundAction {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.08s ease;
+}
+
+.roundAction svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2.6;
+}
+
+.roundAction:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.roundAction:focus-visible,
+.focusClock:focus-visible,
+.focusToggle:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.roundAction:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.roundAction.cancel {
+  background: #dc2626;
+}
+
+.roundAction.cancel:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
+.roundAction.pause {
+  background: #d97706;
+}
+
+.roundAction.pause:hover:not(:disabled) {
+  background: #b45309;
+}
+
+.roundAction.finish {
+  background: #16a34a;
+}
+
+.roundAction.finish:hover:not(:disabled) {
+  background: #15803d;
+}
+
 .actionRow {
   display: flex;
   gap: 8px;
@@ -468,8 +619,7 @@ mark {
 }
 
 .liveLine.hit {
-  border-color: #c7d2fe;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.13);
+  background: rgba(99, 102, 241, 0.08);
 }
 
 .liveLine.hit mark.active {
@@ -539,12 +689,183 @@ mark {
 }
 
 .liveLine {
-  margin-bottom: 11px;
-  padding: 10px 12px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 13px;
+  position: relative;
+  padding: 12px 6px 2px;
+  border-top: 1px solid var(--line);
+  border-radius: 8px;
   animation: lineIn 0.22s ease-out;
+}
+
+.liveLine:first-child {
+  border-top: 0;
+  padding-top: 4px;
+}
+
+.liveLine.continued {
+  border-top: 0;
+  padding-top: 3px;
+}
+
+.liveLine.continued .speaker {
+  position: absolute;
+  top: 1px;
+  right: 4px;
+  margin: 0;
+  padding: 0 2px 0 8px;
+  background: var(--paper);
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.liveLine.continued:hover .speaker,
+.liveLine.continued .speaker:focus-within {
+  opacity: 1;
+}
+
+.liveLine .body {
+  color: var(--ink);
+}
+
+.liveLine:last-child {
+  padding-bottom: 6px;
+}
+
+.liveLine.hasAction .body {
+  padding-left: 9px;
+  box-shadow: inset 2px 0 0 #10b981;
+}
+
+.liveLine.flash {
+  animation: lineFlash 1.6s ease-out;
+}
+
+@keyframes lineFlash {
+  0%, 35% { background: rgba(16, 185, 129, 0.14); }
+  100% { background: transparent; }
+}
+
+.actionChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px 0 7px;
+  border: 1px solid #a7f3d0;
+  border-radius: 999px;
+  background: #ecfdf5;
+  color: #047857;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+
+.actionChip:hover,
+.actionChip.open {
+  background: #d1fae5;
+  border-color: #6ee7b7;
+}
+
+.actionChip:focus-visible,
+.exportItem:focus-visible,
+.actionItem:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.actionPanel {
+  flex: none;
+  max-height: 38%;
+  overflow-y: auto;
+  margin: 0 0 8px;
+  padding: 8px;
+  border: 1px solid #a7f3d0;
+  border-radius: 12px;
+  background: var(--surface);
+  scrollbar-width: thin;
+  animation: lineIn 0.18s ease-out;
+}
+
+.actionHint {
+  margin: 0 4px 6px;
+  font-size: 10.5px;
+  color: var(--inkFaint);
+}
+
+.actionList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+
+.actionItem {
+  display: grid;
+  gap: 1px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.actionItem:hover {
+  background: #ecfdf5;
+}
+
+.actionWho {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #047857;
+  font-variant-numeric: tabular-nums;
+}
+
+.actionText {
+  line-height: 1.45;
+}
+
+.exportWrap {
+  position: relative;
+}
+
+.exportMenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 10;
+  display: grid;
+  min-width: 190px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+  animation: lineIn 0.14s ease-out;
+}
+
+.exportItem {
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.exportItem:hover {
+  background: var(--brandSoft);
 }
 
 @keyframes lineIn {
@@ -575,9 +896,10 @@ mark {
 }
 
 .liveLine.partial {
-  background: transparent;
-  border-style: dashed;
+  border-top: 0;
+  padding-top: 3px;
   color: var(--inkMuted);
+  font-style: italic;
 }
 
 .jumpLatest {

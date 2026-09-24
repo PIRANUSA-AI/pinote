@@ -2,6 +2,21 @@
 
 Tulis rilis terbaru paling atas. Setiap rilis diawali baris `## versi · tanggal`, lalu setiap perubahan diawali `* `.
 
+## 0.16.0 · 24 September 2026
+* Mendukung rapat Microsoft Teams di browser
+* Email tugas didesain ulang: judul rapat yang sebenarnya, tanggal dan jam rapat, daftar tugas yang rapi, dan tombol langsung ke hasil rapat
+* Di Zoom web dan Teams web, transkrip langsung diambil dari teks otomatis rapat kalau fitur itu dinyalakan, lengkap dengan pembicaranya, jadi kalimat jauh lebih akurat
+* Bahasa Indonesia di Zoom, Teams, dan WhatsApp tidak lagi berubah jadi kata kata asing saat bahasa diset Auto
+* Transkrip final setelah rapat mengenali bahasa Indonesia dengan benar saat bahasa diset Auto
+* Mode fokus saat merekam. Kecilkan panel atas supaya yang tersisa hanya durasi rapat dan tiga tombol: merah untuk batal, kuning untuk jeda, hijau untuk selesai
+* Waktu bicara tiap peserta tampil selama rapat, lengkap dengan durasi dan persentasenya
+* Transkrip langsung kini tampil tanpa kotak. Kalimat dari orang yang sama menyambung, dan garis tipis memisahkan tiap pergantian pembicara
+* Tugas yang terdengar selama rapat ditandai di transkrip dan dikumpulkan di satu daftar. Klik tugasnya untuk langsung melompat ke kalimat itu
+* Ekspor transkrip sebagai Markdown, disalin atau diunduh sebagai file .md, lengkap dengan daftar hadir, waktu bicara, dan tugas
+* Kalau Chrome atau extension tertutup di tengah rapat, audio yang sudah terekam tetap tersimpan dan bisa dikirim lewat tombol Kirim rekaman
+* Panel lebih ringan saat rapat ramai atau panjang karena pembaruan transkrip dikumpulkan dulu sebelum ditampilkan dan disimpan
+* Pesan kesalahan lebih jelas dan langsung menyebut langkah yang perlu kamu lakukan
+
 ## 0.10.3 · 23 September 2026
 * Memperbarui extension saat tab Meet masih terbuka tidak lagi memunculkan error berulang. Tab lama berhenti dengan rapi sampai dimuat ulang
 
@@ -16,16 +31,16 @@ Tulis rilis terbaru paling atas. Setiap rilis diawali baris `## versi · tanggal
 * Berapa pun jumlah pesertanya, setiap kalimat diberi nama pemilik suaranya, termasuk saat dua orang bicara bersamaan
 * Suaramu sendiri tetap dari mikrofon dengan nama akunmu
 * Kalimat terakhir sebelum kamu menekan berhenti ikut tersimpan
-* Transkrip langsung kini memakai Deepgram
+* Mesin transkrip langsung diperbarui
 
 ## 0.9.0 · 22 September 2026
 * Tombol Mulai Rekapin kini selalu jalan. Chrome menampilkan dialog pilih tab sekali, lalu perekaman dimulai
 * Jalur cepat tanpa dialog: klik kanan di halaman rapat lalu pilih Mulai Rekapin, atau tekan Ctrl+Shift+U
 * Rekaman berhenti dan terkirim otomatis kalau tab rapat ditutup atau berbagi tab dihentikan
 * Pilihan bahasa tersimpan, jadi tidak perlu diatur ulang setiap kali panel dibuka
-* Transkrip langsung pindah ke mesin OpenAI, teksnya mengalir per kata dan tidak lagi menunggu satu kalimat selesai
+* Teks transkrip langsung kini mengalir per kata dan tidak lagi menunggu satu kalimat selesai
 * Tiap baris transkrip kini diberi nama. Suara kamu dikenali dari mikrofon, nama peserta lain dibaca dari halaman rapat
-* Transkrip final setelah rapat pindah ke Deepgram dengan pemisahan pembicara
+* Transkrip final setelah rapat kini memisahkan tiap pembicara
 * Kalimat pendek dari pembicara yang sama digabung jadi satu baris, tidak lagi pecah tiap beberapa kata
 * Pengiriman rekaman berjalan di latar belakang, jadi kamu bisa langsung merekam rapat berikutnya tanpa menunggu
 * Nama pembicara dibaca dari teks otomatis Google Meet, jadi baris transkrip memakai nama asli peserta

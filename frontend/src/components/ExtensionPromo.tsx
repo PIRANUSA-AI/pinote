@@ -128,7 +128,7 @@ export function ExtensionCard() {
           Transkrip rapat langsung di samping tab kamu
         </h3>
         <p className="mt-1.5 max-w-[40ch] text-[13px] leading-relaxed text-white/70">
-          Google Meet, Zoom web, dan panggilan WhatsApp Web. Hasilnya otomatis masuk ke akun ini.
+          Google Meet, Zoom web, Microsoft Teams web, dan panggilan WhatsApp Web. Hasilnya otomatis masuk ke akun ini.
         </p>
 
         <div className="mt-4 flex flex-wrap gap-2">

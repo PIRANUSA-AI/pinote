@@ -108,10 +108,11 @@ const service = vm.createContext({
     sidePanel: { setPanelBehavior: async () => {} },
     storage: { local: { remove: async () => {}, get: async () => ({}), set: async () => { storageWrites++ } }, onChanged: noopEvent },
     contextMenus: { onClicked: noopEvent }, commands: { onCommand: noopEvent },
-    runtime: { onInstalled: noopEvent, onMessage: noopEvent, sendMessage: async () => {} },
+    runtime: { onInstalled: noopEvent, onMessage: noopEvent, sendMessage: async (message) => { if (message?.target === 'panel') panelUpdates++ } },
   },
 })
 let storageWrites = 0
+let panelUpdates = 0
 vm.runInContext(readFileSync(new URL('../extension/languageDetect.js', import.meta.url), 'utf8'), service)
 vm.runInContext(readFileSync(new URL('../extension/background.js', import.meta.url), 'utf8').replace(/^import .*\r?\n/gm, ''), service)
 await vm.runInContext('ready', service)
@@ -120,13 +121,18 @@ service.batch = { type: 'meetNative', session: 's1', event: 'utterances', uttera
 const run = (code) => vm.runInContext(code, service)
 await new Promise((resolve) => setTimeout(resolve, 350))
 storageWrites = 0
+panelUpdates = 0
 for (let i = 1; i <= 20; i++) {
   service.burst = { type: 'meetNative', session: 's1', event: 'utterances', utterances: [{ ...base, eventId: '900', version: String(i), text: `Revisi ${i}` }] }
   await run('handleServiceMessage(burst, { tab: { id: 42 }, frameId: 0 })')
 }
+assert.equal(panelUpdates, 0, 'A burst of revisions is not sent to the panel one by one')
 assert.equal(storageWrites, 0, 'A burst of revisions is not written one by one')
 await new Promise((resolve) => setTimeout(resolve, 350))
-assert.equal(storageWrites, 1, 'The burst lands as one write')
+assert.equal(panelUpdates, 1, 'The burst reaches the panel as one update')
+assert.equal(storageWrites, 0, 'Frequent updates are persisted on a slower schedule than the panel')
+await new Promise((resolve) => setTimeout(resolve, 2000))
+assert.equal(storageWrites, 1, 'The burst lands in storage as one write')
 assert.equal(run("state.lines.find((l) => l.captionId === '900').text"), 'Revisi 20', 'The batched write carries the latest revision')
 run("state.lines = []; broadcast()")
 assert.equal(storageWrites, 2, 'Urgent broadcasts still write immediately')

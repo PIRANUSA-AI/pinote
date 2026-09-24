@@ -52,16 +52,16 @@ function formatTimestamp(sec: number): string {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-function languageParam(language: Language): string {
-  if (language === 'id') return 'id'
-  if (language === 'en') return 'en'
-  return process.env.DEEPGRAM_AUTO_LANGUAGE ?? 'multi'
+function languageParams(language: Language): Record<string, string> {
+  if (language === 'id' || language === 'en') return { language }
+  const configured = process.env.DEEPGRAM_AUTO_LANGUAGE
+  return configured ? { language: configured } : { detect_language: 'true' }
 }
 
-function buildUrl(language: Language): string {
+export function buildUrl(language: Language): string {
   const params = new URLSearchParams({
     model: DEEPGRAM_MODEL,
-    language: languageParam(language),
+    ...languageParams(language),
     diarize: 'true',
     punctuate: 'true',
     smart_format: 'true',

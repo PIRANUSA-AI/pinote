@@ -1,6 +1,8 @@
 import { readConfig } from './config.js'
 import { combineLines } from './transcriptBlocks.js'
-import { talkTime } from './talkTime.js'
+import { formatTalk, talkTime } from './talkTime.js'
+import { actionSentences, findActions } from './actionItems.js'
+import { markdownFilename, transcriptMarkdown } from './transcriptMarkdown.js'
 
 const el = (id) => document.getElementById(id)
 const LANGUAGE_NAMES = {
@@ -23,6 +25,11 @@ let matches = []
 let activeMatch = -1
 let notice = ''
 let authDelay = 1500
+let focusMode = false
+let actionsOpen = false
+let actionKey = ''
+let actionItems = []
+let currentEntries = []
 
 function show(node, visible) {
   node.hidden = !visible
@@ -40,6 +47,7 @@ function meetingKind(url) {
   if (url.startsWith('https://meet.google.com/')) return 'Google Meet'
   if (/^https:\/\/[^/]*\.?zoom\.us\//.test(url)) return 'Zoom'
   if (url.startsWith('https://web.whatsapp.com/')) return 'WhatsApp'
+  if (/^https:\/\/teams\.(microsoft\.com|live\.com|cloud\.microsoft)\//.test(url)) return 'Microsoft Teams'
   return null
 }
 
@@ -48,6 +56,7 @@ function sourceFor(url) {
   if (kind === 'Google Meet') return 'meet'
   if (kind === 'Zoom') return 'zoom'
   if (kind === 'WhatsApp') return 'whatsapp'
+  if (kind === 'Microsoft Teams') return 'teams'
   return 'upload'
 }
 
@@ -162,6 +171,8 @@ const SVG_NS = 'http://www.w3.org/2000/svg'
 const CHAT_ICON = ['M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.6c-.5.4-1.3.1-1.3-.6V16A2.5 2.5 0 0 1 4 13.5z']
 const COPY_ICON = ['M9 9.5A1.5 1.5 0 0 1 10.5 8h8A1.5 1.5 0 0 1 20 9.5v9a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 9 18.5z', 'M15 8V5.5A1.5 1.5 0 0 0 13.5 4h-8A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H9']
 const CHECK_ICON = ['M5 12.5l4.5 4.5L19 7.5']
+const PAUSE_ICON = ['M9 5.5v13', 'M15 5.5v13']
+const PLAY_ICON = ['M8 5.8v12.4a1 1 0 0 0 1.5.9l9.8-6.2a1 1 0 0 0 0-1.7L9.5 4.9A1 1 0 0 0 8 5.8z']
 
 function icon(paths, className = '') {
   const svg = document.createElementNS(SVG_NS, 'svg')
@@ -205,6 +216,7 @@ function continues(entries, index) {
   return Boolean(previous && entry)
     && (previous.speaker ?? '') === (entry.speaker ?? '')
     && previous.participantId === entry.participantId
+    && Boolean(previous.chat) === Boolean(entry.chat)
 }
 
 function buildLine(entry, startedAt, continued = false) {
@@ -213,6 +225,7 @@ function buildLine(entry, startedAt, continued = false) {
   row.dataset.speaker = entry.speaker ?? ''
   row.dataset.text = entry.text
   row.dataset.continued = continued ? '1' : ''
+  if (actionSentences(entry.text).length > 0) row.classList.add('hasAction')
 
   const header = document.createElement('div')
   header.className = 'speaker'
@@ -395,6 +408,10 @@ function renderTranscript(state) {
   show(lines, hasContent)
   show(el('emptyState'), !hasContent)
   el('lineCount').textContent = entries.length > 0 ? `${entries.length} baris` : ''
+  currentEntries = entries
+  show(el('exportWrap'), entries.length > 0)
+  if (entries.length === 0) closeExportMenu()
+  renderActions(entries, state.startedAt)
 
   if (searchQuery) {
     applySearch()
@@ -402,6 +419,79 @@ function renderTranscript(state) {
   }
 
   if (stickToBottom) scrollToLatest()
+}
+
+function renderActions(entries, startedAt) {
+  actionItems = findActions(entries)
+  const toggle = el('actionToggle')
+  const count = actionItems.length
+  if (count === 0) actionsOpen = false
+  show(toggle, count > 0)
+  el('actionCount').textContent = String(count)
+  toggle.setAttribute('aria-label', `${count} tugas terdengar`)
+  toggle.setAttribute('aria-expanded', String(actionsOpen))
+  toggle.classList.toggle('open', actionsOpen)
+  show(el('actionPanel'), actionsOpen)
+
+  const key = `${startedAt}|${JSON.stringify(actionItems)}`
+  if (key === actionKey) return
+  actionKey = key
+  const list = el('actionList')
+  list.textContent = ''
+  for (const item of actionItems) {
+    const entry = document.createElement('li')
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'actionItem'
+    const who = document.createElement('span')
+    who.className = 'actionWho'
+    const stamp = startedAt && item.at ? ` · ${formatClock(item.at - startedAt)}` : ''
+    who.textContent = `${item.speaker || 'Rapat'}${stamp}`
+    const text = document.createElement('span')
+    text.className = 'actionText'
+    text.textContent = item.text
+    button.append(who, text)
+    button.addEventListener('click', () => jumpToLine(item.index))
+    entry.appendChild(button)
+    list.appendChild(entry)
+  }
+}
+
+function jumpToLine(index) {
+  const row = el('liveLines').children[index]
+  if (!row) return
+  row.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  row.classList.remove('flash')
+  void row.offsetWidth
+  row.classList.add('flash')
+}
+
+function closeExportMenu() {
+  show(el('exportMenu'), false)
+  el('exportToggle').setAttribute('aria-expanded', 'false')
+}
+
+function exportMarkdown() {
+  const state = latestState ?? {}
+  const recording = state.status === 'recording' || state.status === 'starting'
+  const last = currentEntries.at(-1)
+  const lastAt = last ? (last.endAt ?? last.at) : null
+  return transcriptMarkdown({
+    entries: currentEntries,
+    startedAt: state.startedAt,
+    source: state.source,
+    attendance: state.attendance ?? [],
+    talk: talkTime(state.lines),
+    actions: actionItems,
+    durationMs: recording ? elapsedMs(state) : state.startedAt && lastAt ? lastAt - state.startedAt : 0,
+  })
+}
+
+function flashLabel(button, text) {
+  const original = button.dataset.label ?? button.textContent
+  button.dataset.label = original
+  button.textContent = text
+  setTimeout(() => { button.textContent = original }, 1400)
 }
 
 function elapsedMs(state) {
@@ -424,11 +514,6 @@ function bgUploadText(bg) {
 }
 
 let talkKey = ''
-
-function formatTalk(seconds) {
-  const minutes = Math.floor(seconds / 60)
-  return minutes > 0 ? `${minutes}m ${seconds % 60}d` : `${seconds}d`
-}
 
 function renderTalkTime(items) {
   const row = el('talkRow')
@@ -457,6 +542,30 @@ function renderTalkTime(items) {
     entry.append(name, meta, bar)
     row.appendChild(entry)
   }
+}
+
+function renderFocusBar(state) {
+  const live = state.live?.status
+  const clock = el('focusExpand')
+  el('focusTime').textContent = formatClock(elapsedMs(state))
+  clock.className = live === 'reconnecting' || live === 'lost' ? 'focusClock warn' : state.paused ? 'focusClock paused' : 'focusClock'
+  clock.title = el('tabState').textContent
+  const pause = el('focusPause')
+  const mode = state.paused ? 'play' : 'pause'
+  if (pause.dataset.mode !== mode) {
+    pause.dataset.mode = mode
+    pause.replaceChildren(icon(state.paused ? PLAY_ICON : PAUSE_ICON))
+    pause.title = state.paused ? 'Lanjutkan' : 'Jeda'
+    pause.setAttribute('aria-label', state.paused ? 'Lanjutkan rekaman' : 'Jeda rekaman')
+  }
+  el('focusFinish').disabled = el('recordButton').disabled
+}
+
+function setFocusMode(value) {
+  focusMode = value
+  chrome.storage.local.set({ focusMode }).catch(() => {})
+  if (latestState) renderControls(latestState)
+  el(value ? 'focusExpand' : 'focusToggle').focus()
 }
 
 function renderControls(state) {
@@ -491,7 +600,9 @@ function renderControls(state) {
     const mode = state.meetStats.autoLanguage ? ' · otomatis' : ''
     el('languageRow').textContent = `Bahasa transkrip: ${name}${mode}`
   }
-  show(el('languageRow'), recording && Boolean(active))
+  const autoElsewhere = !onMeet && state.language === 'auto'
+  if (autoElsewhere) el('languageRow').textContent = 'Bahasa transkrip langsung: Indonesia. Untuk rapat berbahasa Inggris, pilih English sebelum mulai.'
+  show(el('languageRow'), recording && (Boolean(active) || autoElsewhere))
   const offer = recording && onMeet ? state.languageSuggestion : null
   if (offer) {
     const name = LANGUAGE_NAMES[offer.code] ?? offer.code
@@ -501,7 +612,10 @@ function renderControls(state) {
   }
   show(el('languageSuggest'), Boolean(offer))
   if (!recording) closeCancelModal()
-  el('sheet').className = recording ? 'sheet compact' : 'sheet'
+  const focused = recording && focusMode
+  el('sheet').className = focused ? 'sheet compact focus' : recording ? 'sheet compact' : 'sheet'
+  show(el('focusToggle'), recording && !focused)
+  show(el('focusBar'), focused)
 
   if (recording) {
     el('pauseButton').textContent = state.paused ? 'Lanjut' : 'Jeda'
@@ -523,6 +637,7 @@ function renderControls(state) {
     button.disabled = false
     button.className = 'primaryAction grow recording'
     el('recordLabel').textContent = 'Selesai'
+    renderFocusBar(state)
   } else if (uploading) {
     if (state.upload?.retryAt) {
       el('tabState').textContent = `Gagal mengirim. Mencoba lagi dalam ${secondsUntil(state.upload.retryAt)} detik (${state.upload.attempt}/${state.upload.max}). Rekaman aman.`
@@ -551,7 +666,7 @@ function renderControls(state) {
       el('tabState').className = kind === 'WhatsApp' ? 'tabState private' : 'tabState'
       button.disabled = false
     } else {
-      el('tabState').textContent = 'Buka tab Google Meet, Zoom web, atau WhatsApp Web dulu. Aplikasi desktop tidak bisa direkam.'
+      el('tabState').textContent = 'Buka tab Google Meet, Zoom web, Microsoft Teams web, atau WhatsApp Web dulu. Aplikasi desktop tidak bisa direkam.'
       el('tabState').className = 'tabState warn'
       button.disabled = true
     }
@@ -560,7 +675,10 @@ function renderControls(state) {
   show(el('resultBox'), state.status === 'done' && Boolean(state.jobId))
   show(el('errorBox'), Boolean(state.error))
   if (state.error) el('errorBox').textContent = state.error
-  show(el('recoveryRow'), state.status === 'interrupted' && (state.lines ?? []).length > 0)
+  const hasLines = (state.lines ?? []).length > 0
+  show(el('recoveryRow'), state.status === 'interrupted' && (hasLines || Boolean(state.recoveryId)))
+  show(el('recoverUpload'), state.status === 'interrupted' && Boolean(state.recoveryId))
+  show(el('copyTranscript'), hasLines)
   show(el('uploadRow'), state.status === 'uploadFailed')
 }
 
@@ -600,6 +718,46 @@ el('liveLines').addEventListener('scroll', () => {
 })
 
 el('jumpLatest').addEventListener('click', scrollToLatest)
+
+el('actionToggle').addEventListener('click', () => {
+  actionsOpen = !actionsOpen
+  renderActions(currentEntries, latestState?.startedAt)
+})
+
+el('exportToggle').addEventListener('click', (event) => {
+  event.stopPropagation()
+  const open = el('exportMenu').hidden
+  show(el('exportMenu'), open)
+  el('exportToggle').setAttribute('aria-expanded', String(open))
+  if (open) el('exportCopy').focus()
+})
+
+el('exportMenu').addEventListener('click', (event) => event.stopPropagation())
+document.addEventListener('click', closeExportMenu)
+el('exportMenu').addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return
+  closeExportMenu()
+  el('exportToggle').focus()
+})
+
+el('exportCopy').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(exportMarkdown())
+    flashLabel(el('exportCopy'), 'Tersalin')
+  } catch {
+    flashLabel(el('exportCopy'), 'Gagal menyalin')
+  }
+})
+
+el('exportDownload').addEventListener('click', () => {
+  const url = URL.createObjectURL(new Blob([exportMarkdown()], { type: 'text/markdown;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = markdownFilename(latestState?.startedAt)
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  closeExportMenu()
+})
 
 document.addEventListener('keydown', (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
@@ -651,6 +809,12 @@ el('cancelButton').addEventListener('click', () => {
 })
 
 el('cancelKeep').addEventListener('click', closeCancelModal)
+
+el('focusToggle').addEventListener('click', () => setFocusMode(true))
+el('focusExpand').addEventListener('click', () => setFocusMode(false))
+el('focusCancel').addEventListener('click', () => el('cancelButton').click())
+el('focusPause').addEventListener('click', () => el('pauseButton').click())
+el('focusFinish').addEventListener('click', () => el('recordButton').click())
 
 async function answerSuggestion(type) {
   const code = el('languageSuggest').dataset.code
@@ -731,7 +895,15 @@ el('discardUploadButton').addEventListener('click', async () => {
   await pullState()
 })
 
+el('recoverUpload').addEventListener('click', async () => {
+  el('recoverUpload').disabled = true
+  await chrome.runtime.sendMessage({ target: 'service', type: 'recoverUpload' }).catch(() => null)
+  el('recoverUpload').disabled = false
+  await pullState()
+})
+
 el('discardSession').addEventListener('click', async () => {
+  if (latestState?.recoveryId && !window.confirm('Buang rekaman ini? Audio yang tersimpan akan hilang permanen.')) return
   await chrome.runtime.sendMessage({ target: 'service', type: 'reset' })
   await pullState()
 })
@@ -811,8 +983,9 @@ el('autoInsights').addEventListener('change', () => {
 })
 
 async function restorePreferences() {
-  const stored = await chrome.storage.local.get('autoInsights').catch(() => null)
+  const stored = await chrome.storage.local.get(['autoInsights', 'focusMode']).catch(() => null)
   el('autoInsights').checked = stored?.autoInsights !== false
+  focusMode = stored?.focusMode === true
 }
 
 async function restoreLanguage() {

@@ -315,7 +315,7 @@ const FEATURES = [
   {
     icon: MicrophoneStage,
     title: 'Transkrip otomatis',
-    body: 'Upload audio rapat atau rekam langsung dari Google Meet, Zoom, dan WhatsApp. Transkrip rapi lengkap dengan label pembicara.',
+    body: 'Upload audio rapat atau rekam langsung dari Google Meet, Zoom, Microsoft Teams, dan WhatsApp. Transkrip rapi lengkap dengan label pembicara.',
   },
   {
     icon: Sparkle,

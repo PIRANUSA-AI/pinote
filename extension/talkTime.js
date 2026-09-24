@@ -7,6 +7,11 @@ function lineSeconds(line) {
   return Math.min(MAX_LINE_SECONDS, Math.max(measured, words * SECONDS_PER_WORD))
 }
 
+export function formatTalk(seconds) {
+  const minutes = Math.floor(seconds / 60)
+  return minutes > 0 ? `${minutes}m ${seconds % 60}d` : `${seconds}d`
+}
+
 export function talkTime(lines, limit = 5) {
   const totals = new Map()
   for (const line of lines ?? []) {

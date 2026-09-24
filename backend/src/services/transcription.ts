@@ -7,7 +7,7 @@ import { transcribeFromUrl as transcribeWithQwen } from './qwen.js'
 import { polishTranscript, generateInsights } from './insights.js'
 import { cacheJobStatus, invalidateUserStats } from './cache.js'
 import { createDownloadUrl } from './storage.js'
-import { sendTaskDigest } from './email.js'
+import { fallbackMeetingTitle, sendTaskDigest } from './email.js'
 import { nativeSegments } from '../lib/nativeTranscript.js'
 import { publicError } from '../lib/publicError.js'
 
@@ -191,7 +191,8 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
             )
             .catch((err) => console.warn(`[${jobId}] Failed to persist action items:`, err))
 
-          const meetingTitle = job.title || job.filename.replace(/\.[^/.]+$/, '')
+          const meetingAt = new Date(new Date(job.createdAt).getTime() - (actualDuration ?? 0) * 1000)
+          const meetingTitle = insights.title || job.title || fallbackMeetingTitle(meetingAt)
 
           type ResolvedUser = { email: string; displayName: string | null; ccEmails: string[] }
           const ownerCache = new Map<string, ResolvedUser | null>()
@@ -234,6 +235,8 @@ export async function processStoredTranscriptionJob(jobId: string): Promise<void
               to,
               tasks: bundle.tasks,
               meetingTitle,
+              meetingAt,
+              jobId,
               assigneeName: bundle.assigneeName,
             }).catch((err) => console.warn(`[${jobId}] Email send failed for ${to}:`, err))
           }

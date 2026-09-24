@@ -1,5 +1,6 @@
 import { readConfig } from './config.js'
 import './languageDetect.js'
+import './recoveryStore.js'
 import { applyMeetEvent, applyUtterance, claimSelfVoice, nativeTranscript } from './meetTranscript.js'
 
 const ACTIVE_STATUSES = ['starting', 'recording', 'uploading', 'uploadFailed']
@@ -14,7 +15,10 @@ const VOICE_SCRIPT_CONFIDENCE = 0.9
 const VOICE_MIN_TOKENS = 5
 const VOICE_EVIDENCE = 2
 const DISMISS_LANGUAGE_MS = 120000
-const MEETING_PATTERNS =['https://meet.google.com/*', 'https://*.zoom.us/*', 'https://web.whatsapp.com/*']
+const MEETING_PATTERNS = ['https://meet.google.com/*', 'https://*.zoom.us/*', 'https://web.whatsapp.com/*', 'https://teams.microsoft.com/*', 'https://teams.live.com/*', 'https://teams.cloud.microsoft/*']
+const CAPTION_SOURCES = ['zoom', 'teams']
+const CAPTION_FRESH_MS = 45000
+const TEAMS_URL =/^https:\/\/teams\.(microsoft\.com|live\.com|cloud\.microsoft)\//
 
 const state = {
   status: 'idle',
@@ -133,6 +137,7 @@ function sourceFor(url) {
   if (url.startsWith('https://meet.google.com/')) return 'meet'
   if (/^https:\/\/[^/]*\.?zoom\.us\//.test(url)) return 'zoom'
   if (url.startsWith('https://web.whatsapp.com/')) return 'whatsapp'
+  if (TEAMS_URL.test(url)) return 'teams'
   return 'upload'
 }
 
@@ -170,6 +175,12 @@ async function resolveStream(tabId, mode) {
   return { streamId: await pickTabStream(), mediaSource: 'desktop' }
 }
 
+function interruptedMessage() {
+  return state.recoveryId
+    ? 'Sesi sebelumnya terputus sebelum rekaman terkirim. Audio yang sudah tertangkap masih tersimpan, tekan Kirim rekaman untuk memprosesnya.'
+    : 'Sesi sebelumnya terputus sebelum rekaman sempat terkirim. Transkrip langsung di bawah masih tersimpan.'
+}
+
 async function restoreState() {
   try {
     const stored = await chrome.storage.local.get('liveState')
@@ -184,7 +195,7 @@ async function restoreState() {
     state.pausedAt = null
     state.live = null
     state.upload = null
-    state.error = 'Sesi sebelumnya terputus sebelum rekaman sempat terkirim. Transkrip langsung di bawah masih tersimpan.'
+    state.error = interruptedMessage()
   } catch {
     return
   }
@@ -193,26 +204,36 @@ async function restoreState() {
 const ready = restoreState()
 
 const BROADCAST_MS = 300
+const PERSIST_MS = 2000
 const FREQUENT_EVENTS = new Set(['laneStats', 'languageProbe', 'lanePartial', 'laneFinal', 'livePartial', 'liveFinal'])
 let broadcastTimer = null
+let persistTimer = null
 
 function broadcastSoon() {
   if (broadcastTimer) return
-  broadcastTimer = setTimeout(broadcast, BROADCAST_MS)
+  broadcastTimer = setTimeout(() => broadcast(false), BROADCAST_MS)
 }
 
-function broadcast() {
+function persistNow() {
+  clearTimeout(persistTimer)
+  persistTimer = null
+  chrome.storage.local.set({ liveState: { ...state } }).catch(() => {})
+}
+
+function broadcast(urgent = true) {
   clearTimeout(broadcastTimer)
   broadcastTimer = null
-  const snapshot = { ...state }
-  chrome.runtime.sendMessage({ target: 'panel', type: 'state', state: snapshot }).catch(() => {})
-  chrome.storage.local.set({ liveState: snapshot }).catch(() => {})
+  chrome.runtime.sendMessage({ target: 'panel', type: 'state', state: { ...state } }).catch(() => {})
+  if (urgent) persistNow()
+  else if (!persistTimer) persistTimer = setTimeout(persistNow, PERSIST_MS)
 }
 
 function reset() {
   speakerEvents = []
   roster = []
   state.sessionId = null
+  state.recoveryId = null
+  state.captionAt = null
   state.meetParticipants = {}
   state.meetStreams = {}
   state.utteranceMeeting = null
@@ -267,6 +288,9 @@ async function closeOffscreen() {
 async function startRecording(tabId, language, source, mode, skipInsights) {
   if (state.status === 'uploadFailed') {
     return { ok: false, error: 'Rekaman sebelumnya belum terkirim. Kirim ulang atau buang dulu.' }
+  }
+  if (state.status === 'interrupted' && state.recoveryId) {
+    return { ok: false, error: 'Rekaman sebelumnya terputus dan belum terkirim. Kirim rekaman atau buang dulu.' }
   }
   if (state.status === 'recording' || state.status === 'starting') {
     return { ok: false, error: 'Transkrip langsung sudah berjalan' }
@@ -454,7 +478,9 @@ async function retryUpload() {
   const response = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'retryUpload' }).catch(() => null)
   if (!response || !response.ok) {
     state.status = 'interrupted'
-    state.error = 'Rekaman tidak lagi tersedia untuk dikirim ulang. Transkrip langsung di bawah masih tersimpan.'
+    state.error = state.recoveryId
+      ? interruptedMessage()
+      : 'Rekaman tidak lagi tersedia untuk dikirim ulang. Transkrip langsung di bawah masih tersimpan.'
     broadcast()
     return { ok: false, error: state.error }
   }
@@ -464,9 +490,48 @@ async function retryUpload() {
   return { ok: true }
 }
 
+async function recoverUpload() {
+  if (state.status !== 'interrupted' || !state.recoveryId) return { ok: false, error: 'Tidak ada rekaman yang bisa dipulihkan' }
+  let response = null
+  try {
+    const { apiBase } = await readConfig()
+    await ensureOffscreen()
+    response = await chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: 'recoverUpload',
+      recoveryId: state.recoveryId,
+      apiBase,
+      attendance: state.attendance ?? [],
+      speakerTimeline: buildSpeakerTimeline(),
+      nativeTranscript: state.source === 'meet' ? nativeTranscript(state) : undefined,
+    })
+  } catch {
+    response = null
+  }
+  if (!response?.ok) {
+    if (response?.missing) state.recoveryId = null
+    state.error = response?.error || 'Rekaman belum bisa dikirim. Coba lagi sebentar lagi.'
+    broadcast()
+    return { ok: false, error: state.error }
+  }
+  if (state.status === 'interrupted') {
+    state.status = 'uploading'
+    state.upload = null
+    state.error = null
+  }
+  broadcast()
+  return { ok: true }
+}
+
+function dropStoredRecovery() {
+  const id = state.recoveryId
+  if (id) globalThis.RekapinRecovery?.drop(id).catch(() => {})
+}
+
 async function discardUpload() {
   await chrome.runtime.sendMessage({ target: 'offscreen', type: 'discardUpload' }).catch(() => null)
   await closeOffscreen().catch(() => {})
+  dropStoredRecovery()
   reset()
   state.background = null
   broadcast()
@@ -511,6 +576,9 @@ function handleOffscreenEvent(message) {
       state.error = null
       state.nativeError = null
     }
+  } else if ((message.type === 'livePartial' || message.type === 'liveFinal') && captionsFlowing()) {
+    clearLiveError()
+    return
   } else if (message.type === 'livePartial') {
     if (!state.partial) state.utteranceStart = Date.now()
     state.partial = message.text
@@ -550,6 +618,9 @@ function handleOffscreenEvent(message) {
   } else if (message.type === 'micUnavailable') {
     state.micOn = false
     state.error = 'Mikrofon tidak bisa diakses, jadi suara kamu sendiri tidak ikut terekam. Hanya suara peserta lain yang tertangkap.'
+  } else if (message.type === 'captureStarted') {
+    if (typeof message.recoveryId !== 'string' || state.status !== 'starting') return
+    state.recoveryId = message.recoveryId
   } else if (message.type === 'uploadStatus') {
     const busy = state.status === 'recording' || state.status === 'starting'
     if (message.status === 'uploading') {
@@ -579,6 +650,7 @@ function handleOffscreenEvent(message) {
       } else {
         state.status = 'done'
         state.jobId = message.jobId
+        state.recoveryId = null
         state.upload = null
         state.error = null
         state.background = null
@@ -681,6 +753,32 @@ function deepgramCoversSelf(utterance) {
   return selfVoiceHealthy()
 }
 
+function captionsFlowing(now = Date.now()) {
+  return Boolean(state.captionAt) && now - state.captionAt < CAPTION_FRESH_MS
+}
+
+function handleCaptionFeed(message, sender) {
+  if (sender?.tab?.id !== state.tabId || !CAPTION_SOURCES.includes(state.source) || state.status !== 'recording' || state.paused) return { ok: false }
+  if (message.event === 'roster') {
+    if (!Array.isArray(message.users)) return { ok: false }
+    const users = message.users.slice(0, 200).filter((user) => typeof user?.id === 'string' && user.id.startsWith('caption:'))
+    if (applyMeetEvent(state, { event: 'roster', users })) broadcastSoon()
+    return { ok: true }
+  }
+  if (message.event !== 'utterances' || !Array.isArray(message.utterances)) return { ok: false }
+  let changed = false
+  for (const utterance of message.utterances.slice(0, 200)) {
+    if (typeof utterance?.participantId !== 'string' || !utterance.participantId.startsWith('caption:')) continue
+    if (applyUtterance(state, { ...utterance, source: state.source, kind: undefined, speakerName: undefined })) changed = true
+  }
+  if (changed) {
+    if (!captionsFlowing()) state.partial = ''
+    state.captionAt = Date.now()
+    broadcastSoon()
+  }
+  return { ok: true }
+}
+
 async function handleServiceMessage(message, sender) {
   if (message.type === 'meetNative') {
     if (sender?.tab?.id !== state.tabId || sender.frameId !== 0 || state.source !== 'meet' || state.status !== 'recording' || state.paused || message.session !== state.sessionId) return { ok: false }
@@ -724,6 +822,7 @@ async function handleServiceMessage(message, sender) {
     broadcast()
     return { ok: Boolean(reply?.ok) }
   }
+  if (message.type === 'captionFeed') return handleCaptionFeed(message, sender)
   if (['speaker', 'roster', 'watcher', 'captions'].includes(message.type)
     && (sender?.tab?.id !== state.tabId || state.source === 'meet' || state.status !== 'recording' || state.paused)) return { ok: false }
   if (message.type === 'getState') return { ...state }
@@ -763,7 +862,9 @@ async function handleServiceMessage(message, sender) {
   if (message.type === 'stop') return stopRecording()
   if (message.type === 'retryUpload') return retryUpload()
   if (message.type === 'discardUpload') return discardUpload()
+  if (message.type === 'recoverUpload') return recoverUpload()
   if (message.type === 'reset') {
+    if (state.status === 'interrupted') dropStoredRecovery()
     reset()
     broadcast()
     chrome.storage.local.remove('liveState').catch(() => {})

@@ -188,7 +188,7 @@ export default function Extension() {
             Transkrip rapat langsung di samping tab kamu
           </h1>
           <p className="mt-3 max-w-[52ch] text-[14px] leading-relaxed text-ink-muted">
-            Rekam dan tulis otomatis rapat Google Meet, Zoom web, dan panggilan WhatsApp Web. Hasilnya masuk ke akun
+            Rekam dan tulis otomatis rapat Google Meet, Zoom web, Microsoft Teams web, dan panggilan WhatsApp Web. Hasilnya masuk ke akun
             Rekapin kamu lengkap dengan ringkasan dan tugas.
           </p>
         </motion.header>

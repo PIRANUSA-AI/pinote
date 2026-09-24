@@ -21,7 +21,7 @@ const createSchema = z.object({
   sizeBytes: z.number().int().positive().max(MAX_FILE_BYTES),
   durationSec: z.number().int().positive(),
   language: z.enum(['id', 'en', 'auto']).optional(),
-  source: z.enum(['upload', 'meet', 'zoom', 'whatsapp']).optional(),
+  source: z.enum(['upload', 'meet', 'zoom', 'teams', 'whatsapp']).optional(),
   skipInsights: z.boolean().optional(),
   nativeTranscript: nativeTranscriptSchema.optional(),
   attendance: z.array(z.string().min(1).max(120)).max(50).optional(),

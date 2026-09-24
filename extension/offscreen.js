@@ -105,6 +105,12 @@ function httpError(message, status) {
   return err
 }
 
+const AUTO_LIVE_LANGUAGE = 'id'
+
+function liveLanguage(language) {
+  return !language || language === 'auto' ? AUTO_LIVE_LANGUAGE : language
+}
+
 function connectLive() {
   const current = capture
   if (!current || current.stopping) return
@@ -116,7 +122,7 @@ function connectLive() {
   socket.addEventListener('open', () => {
     if (current.stopping) return
     current.liveRetry = 0
-    socket.send(JSON.stringify({ type: 'start', language: current.language, sampleRate: current.sampleRate }))
+    socket.send(JSON.stringify({ type: 'start', language: liveLanguage(current.language), sampleRate: current.sampleRate }))
     report({ type: 'liveStatus', status: 'connected' })
   })
 
@@ -424,8 +430,14 @@ async function start({ streamId, mediaSource, language, apiBase, source, tabId, 
   const recorderMime = pickRecorderMime()
   const recorder = new MediaRecorder(mixDestination.stream, recorderMime ? { mimeType: recorderMime } : undefined)
   const chunks = []
+  const recoveryId = crypto.randomUUID()
+  const recovery = globalThis.RekapinRecovery
+  recovery?.begin({ id: recoveryId, mime: recorderMime || 'audio/webm', source: source ?? 'upload', language, skipInsights: Boolean(skipInsights), apiBase }).catch(() => {})
+  recovery?.prune([recoveryId]).catch(() => {})
   recorder.ondataavailable = (event) => {
-    if (event.data && event.data.size > 0) chunks.push(event.data)
+    if (!event.data || event.data.size === 0) return
+    chunks.push(event.data)
+    recovery?.append(recoveryId, event.data).catch(() => {})
   }
   recorder.onerror = (event) => {
     const reason = event?.error?.message ?? event?.error?.name ?? 'penyebab tidak diketahui'
@@ -441,6 +453,7 @@ async function start({ streamId, mediaSource, language, apiBase, source, tabId, 
     socket: null,
     recorder,
     chunks,
+    recoveryId,
     recorderMime: recorderMime || 'audio/webm',
     sampleRate: asrContext.sampleRate,
     startedAt: Date.now(),
@@ -498,7 +511,7 @@ async function start({ streamId, mediaSource, language, apiBase, source, tabId, 
   }
 
   if (capture.source !== 'meet') connectLive()
-  report({ type: 'captureStarted' })
+  report({ type: 'captureStarted', recoveryId })
 }
 
 function stopRecorder(recorder) {
@@ -625,6 +638,7 @@ async function runUpload() {
     await withRetries(() => putAudio(job))
     uploadQueue.shift()
     delivered = true
+    globalThis.RekapinRecovery?.drop(job.recoveryId).catch(() => {})
     report({ type: 'uploadStatus', status: 'done', jobId: job.jobId, queued: uploadQueue.length })
   } catch (err) {
     report({ type: 'uploadStatus', status: 'failed', message: friendlyFailure(err) })
@@ -665,28 +679,62 @@ async function stop(attendance, speakerTimeline, nativeTranscript) {
     }
   }
 
-  const descriptor = uploadDescriptor(current.recorderMime)
-  const stamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)
-  const prefix = current.source === 'whatsapp' ? 'panggilan whatsapp' : 'rapat'
-
-  uploadQueue.push({
+  queueUpload({
     blob,
+    mime: current.recorderMime,
+    at: Date.now(),
     apiBase: current.apiBase,
-    mimeType: descriptor.mimeType,
-    filename: `${prefix} ${stamp}.${descriptor.extension}`,
     durationSec: Math.max(1, Math.round((Date.now() - current.startedAt - current.pausedTotalMs - (current.pausedAt ? Date.now() - current.pausedAt : 0)) / 1000)),
     language: current.language,
     source: current.source,
     skipInsights: current.skipInsights,
+    recoveryId: current.recoveryId,
+  }, { attendance, speakerTimeline, nativeTranscript })
+  return { ok: true, accepted: true }
+}
+
+function queueUpload(recording, { attendance, speakerTimeline, nativeTranscript }) {
+  const descriptor = uploadDescriptor(recording.mime)
+  const stamp = new Date(recording.at).toISOString().replace(/[:.]/g, '').slice(0, 15)
+  const prefix = recording.source === 'whatsapp' ? 'panggilan whatsapp' : 'rapat'
+  uploadQueue.push({
+    blob: recording.blob,
+    apiBase: recording.apiBase,
+    mimeType: descriptor.mimeType,
+    filename: `${prefix} ${stamp}.${descriptor.extension}`,
+    durationSec: recording.durationSec,
+    language: recording.language,
+    source: recording.source,
+    skipInsights: recording.skipInsights,
     attendance: Array.isArray(attendance) ? attendance : [],
     speakerTimeline: Array.isArray(speakerTimeline) ? speakerTimeline : [],
-    nativeTranscript: current.source === 'meet' && Array.isArray(nativeTranscript) ? nativeTranscript : undefined,
+    nativeTranscript: recording.source === 'meet' && Array.isArray(nativeTranscript) ? nativeTranscript : undefined,
+    recoveryId: recording.recoveryId ?? null,
     jobId: null,
     uploadUrl: null,
   })
-
   runUpload()
-  return { ok: true, accepted: true }
+}
+
+async function recoverUpload(message) {
+  const recovery = globalThis.RekapinRecovery
+  const saved = recovery ? await recovery.load(message.recoveryId).catch(() => null) : null
+  if (!saved || saved.chunks.length === 0) {
+    return { ok: false, missing: true, error: 'Audio rekaman ini tidak tersimpan di browser. Transkrip langsung di bawah masih bisa disalin.' }
+  }
+  if (uploadQueue.some((job) => job.recoveryId === saved.id)) return { ok: true }
+  queueUpload({
+    blob: new Blob(saved.chunks, { type: saved.mime }),
+    mime: saved.mime,
+    at: saved.createdAt,
+    apiBase: typeof message.apiBase === 'string' ? message.apiBase : saved.apiBase,
+    durationSec: Math.max(1, saved.chunks.length),
+    language: saved.language,
+    source: saved.source,
+    skipInsights: saved.skipInsights,
+    recoveryId: saved.id,
+  }, message)
+  return { ok: true }
 }
 
 async function cancelCapture() {
@@ -700,6 +748,7 @@ async function cancelCapture() {
 
   try {
     await stopRecorder(current.recorder)
+    await globalThis.RekapinRecovery?.drop(current.recoveryId).catch(() => {})
   } finally {
     current.stream.getTracks().forEach((track) => track.stop())
     current.micStream?.getTracks().forEach((track) => track.stop())
@@ -740,8 +789,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return undefined
   }
 
+  if (message.type === 'recoverUpload') {
+    recoverUpload(message)
+      .then((result) => sendResponse(result))
+      .catch((err) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }))
+    return true
+  }
+
   if (message.type === 'discardUpload') {
-    uploadQueue.shift()
+    const dropped = uploadQueue.shift()
+    globalThis.RekapinRecovery?.drop(dropped?.recoveryId).catch(() => {})
     sendResponse({ ok: true })
     if (uploadQueue.length > 0) runUpload()
     return undefined
