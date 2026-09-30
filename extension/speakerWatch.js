@@ -1,5 +1,6 @@
 const POLL_MS = 350
 const CAPTION_GRACE_MS = 6000
+const SPEAKER_HEARTBEAT_MS = 1000
 const MAX_NODES_PER_ROW = 60
 const SELF_LABELS = ['you', 'anda', 'kamu', 'saya']
 
@@ -18,6 +19,7 @@ const isMeet = location.hostname === 'meet.google.com'
 
 let timer = null
 let lastName = null
+let lastSpeakerSent = 0
 let lastCaptionsOn = null
 let lastRoster = ''
 let watchingSince = 0
@@ -206,8 +208,10 @@ function tick() {
     }
   }
 
-  if (name === lastName) return
+  const now = Date.now()
+  if (name === lastName && (!name || now - lastSpeakerSent < SPEAKER_HEARTBEAT_MS)) return
   lastName = name
+  lastSpeakerSent = now
   send({ type: 'speaker', name })
 }
 

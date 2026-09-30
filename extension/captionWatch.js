@@ -65,6 +65,7 @@ const TEAMS_SKIP = 'button, [role="button"], [role="menu"], [data-tid*="setting"
 const TEAMS_AVATAR = 'img, [data-tid*="avatar" i], [class*="avatar" i]'
 const TEAMS_ROW_DEPTH = 6
 const TEAMS_SEEN_LIMIT = 400
+const TEAMS_TAIL_AVATARS = 24
 let teamsRowIds = new WeakMap()
 let teamsSeen = new Map()
 let teamsRowCounter = 0
@@ -83,7 +84,7 @@ function textLeaves(node) {
 function teamsRows(root) {
   const rows = []
   const taken = new Set()
-  for (const avatar of root.querySelectorAll(TEAMS_AVATAR)) {
+  for (const avatar of [...root.querySelectorAll(TEAMS_AVATAR)].slice(-TEAMS_TAIL_AVATARS)) {
     let node = avatar.parentElement
     for (let depth = 0; depth < TEAMS_ROW_DEPTH && node && node !== root.parentElement; depth++, node = node.parentElement) {
       const leaves = textLeaves(node).filter((leaf) => !avatar.contains(leaf.element))
@@ -178,13 +179,27 @@ function syncRoster(root) {
   captionSend({ event: 'roster', users })
 }
 
+function groupItems(items) {
+  const grouped = new Map()
+  for (const item of items) {
+    const text = String(item.text ?? '').replace(/\s+/g, ' ').trim()
+    if (!item.key || !text) continue
+    const known = grouped.get(item.key)
+    if (known) {
+      known.text = `${known.text} ${text}`
+      if (!known.name && item.name) known.name = item.name
+    } else grouped.set(item.key, { ...item, text })
+  }
+  return grouped.values()
+}
+
 function captionTick(final = false) {
   let root = null
   let events = []
   try {
     root = captionSource.root()
     if (root && !final) {
-      for (const item of captionSource.items(root)) {
+      for (const item of groupItems(captionSource.items(root))) {
         const speaker = speakerFor(item.speakerKey)
         if (item.name && !speaker.name) speaker.name = item.name
         itemSpeakers.set(item.key, speaker)

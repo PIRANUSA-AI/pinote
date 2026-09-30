@@ -107,6 +107,8 @@ function httpError(message, status) {
 
 const AUTO_LIVE_LANGUAGE = 'id'
 const LIVE_QUIET_MAX_MS = 60000
+const LIVE_RETRY_CAP_MS = 30000
+const HEARTBEAT_MS = 20000
 
 function liveLanguage(language) {
   return !language || language === 'auto' ? AUTO_LIVE_LANGUAGE : language
@@ -121,8 +123,7 @@ function connectLive() {
   current.socket = socket
 
   socket.addEventListener('open', () => {
-    if (current.stopping) return
-    current.liveRetry = 0
+    if (current.stopping || current.socket !== socket) return
     socket.send(JSON.stringify({ type: 'start', language: liveLanguage(current.language), sampleRate: current.sampleRate }))
     report({ type: 'liveStatus', status: 'connected' })
   })
@@ -134,6 +135,11 @@ function connectLive() {
     } catch {
       return
     }
+    if (current.socket !== socket) {
+      if (message.type === 'final') report({ type: 'liveFinal', text: message.text, speakerSource: takeSpeakerSource() })
+      return
+    }
+    if (['ready', 'partial', 'final'].includes(message.type)) current.liveRetry = 0
     if (message.type === 'partial') report({ type: 'livePartial', text: message.text })
     else if (message.type === 'final') report({ type: 'liveFinal', text: message.text, speakerSource: takeSpeakerSource() })
     else if (message.type === 'error') report({ type: 'liveError', message: message.message })
@@ -142,10 +148,7 @@ function connectLive() {
 
   socket.addEventListener('close', (event) => {
     if (current.stopping || current.socket !== socket) return
-    if (event.code === 1008) {
-      report({ type: 'liveStatus', status: 'lost' })
-      return
-    }
+    if (event.code === 1008) current.liveRetry = Math.max(current.liveRetry, MAX_RETRIES)
     scheduleLiveReconnect(current)
   })
 }
@@ -220,6 +223,12 @@ function laneEntry(current, lane, language, engine) {
     }
     const { participantId, startedAt } = parseTag(message.tag)
     const probe = entry.engine === 'qwen'
+    if (message.type === 'upstreamClosed') {
+      if (current.lanes.get(lane) === entry) current.lanes.delete(lane)
+      try { socket.close() } catch {}
+      reportLaneStats(current)
+      return
+    }
     if (message.type === 'partial') {
       if (!probe) report({ type: 'lanePartial', lane, participantId, text: message.text })
     } else if (message.type === 'final') {
@@ -349,20 +358,47 @@ chrome.runtime.onConnect.addListener((port) => {
 })
 
 function scheduleLiveReconnect(current) {
-  if (current.liveRetry >= MAX_RETRIES) {
-    report({ type: 'liveStatus', status: 'lost' })
-    return
-  }
+  if (current.stopping || capture !== current) return
+  clearTimeout(current.liveTimer)
   current.liveRetry += 1
-  const delay = retryDelay(current.liveRetry)
-  report({
+  const delay = Math.min(retryDelay(current.liveRetry), LIVE_RETRY_CAP_MS)
+  if (current.liveRetry > MAX_RETRIES) report({ type: 'liveStatus', status: 'lost' })
+  else report({
     type: 'liveStatus',
     status: 'reconnecting',
     attempt: current.liveRetry,
     max: MAX_RETRIES,
     retryAt: Date.now() + delay,
   })
-  current.liveTimer = setTimeout(() => connectLive(), delay)
+  current.liveTimer = setTimeout(() => {
+    if (capture === current && !current.stopping) connectLive()
+  }, delay)
+}
+
+function restartLive(current) {
+  const previous = current.socket
+  current.socket = null
+  clearTimeout(current.liveTimer)
+  current.liveRetry = 0
+  if (previous) {
+    try {
+      if (previous.readyState === WebSocket.OPEN) previous.send(JSON.stringify({ type: 'stop' }))
+    } catch {}
+    setTimeout(() => {
+      try { previous.close() } catch {}
+    }, LANE_RETIRE_MS)
+  }
+  connectLive()
+}
+
+function setLiveLanguage(language) {
+  const current = capture
+  if (!current || current.stopping) return { ok: false, error: 'Tidak ada perekaman aktif' }
+  if (typeof language !== 'string' || !language) return { ok: false, error: 'Bahasa tidak valid' }
+  if (current.source === 'meet' || current.language === language) return { ok: true }
+  current.language = language
+  restartLive(current)
+  return { ok: true }
 }
 
 async function captureTab(streamId, mediaSource) {
@@ -478,6 +514,7 @@ async function start({ streamId, mediaSource, language, apiBase, source, tabId, 
     tabMeter: createMeter(playbackContext, stream),
     energy: { mic: 0, tab: 0 },
     energyTimer: null,
+    heartbeatTimer: null,
     lastVoiceAt: 0,
     awaitingFlush: false,
     liveQuietUntil: 0,
@@ -512,6 +549,8 @@ async function start({ streamId, mediaSource, language, apiBase, source, tabId, 
     if (current.socket && current.socket.readyState === WebSocket.OPEN) current.socket.send(event.data)
     else if (current.source === 'meet') sampleParticipants(current, event.data)
   }
+
+  capture.heartbeatTimer = setInterval(() => report({ type: 'keepAlive' }), HEARTBEAT_MS)
 
   if (capture.source !== 'meet') connectLive()
   report({ type: 'captureStarted', recoveryId })
@@ -659,6 +698,7 @@ async function stop(attendance, speakerTimeline, nativeTranscript, titleHint) {
   current.stopping = true
   clearTimeout(current.liveTimer)
   clearInterval(current.energyTimer)
+  clearInterval(current.heartbeatTimer)
   closeLanes(current)
   capture = null
 
@@ -748,6 +788,7 @@ async function cancelCapture() {
   current.stopping = true
   clearTimeout(current.liveTimer)
   clearInterval(current.energyTimer)
+  clearInterval(current.heartbeatTimer)
   closeLanes(current)
   capture = null
 
@@ -795,6 +836,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'setPaused') {
     sendResponse(setPaused(Boolean(message.paused)))
+    return undefined
+  }
+
+  if (message.type === 'setLanguage') {
+    sendResponse(setLiveLanguage(message.language))
+    return undefined
+  }
+
+  if (message.type === 'captureAlive') {
+    sendResponse({ ok: Boolean(capture && !capture.stopping), recoveryId: capture?.recoveryId ?? null })
     return undefined
   }
 

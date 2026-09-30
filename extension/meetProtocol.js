@@ -48,6 +48,21 @@
     }
     return map
   }
+  function everyNested(map, ...path) {
+    let level = [map]
+    for (const id of path) {
+      const next = []
+      for (const item of level) {
+        for (const { wire, value } of item.get(id) ?? []) {
+          if (wire !== 2) continue
+          try { next.push(fields(value)) } catch {}
+        }
+      }
+      level = next
+      if (!level.length) break
+    }
+    return level
+  }
   function repeated(map, id, read) {
     const list = []
     for (const { wire, value } of map.get(id) ?? []) {
@@ -59,24 +74,26 @@
     }
     return list
   }
-  function users(map) {
-    return repeated(map, 2, (u) => {
-      const user = { id: str(u, 1), name: str(u, 2) || str(u, 29), parentId: str(u, 21), self: Boolean(str(u, 7)), status: num(u, 4) }
+  function users(maps) {
+    return maps.flatMap((map) => repeated(map, 2, (u) => {
+      const id = str(u, 1)
+      const parent = str(u, 21)
+      const user = { id, name: str(u, 2) || str(u, 29), parentId: parent && parent !== id && parent.length <= 512 ? parent : '', self: Boolean(str(u, 7)), status: num(u, 4) }
       return user.id && user.id.length <= 512 && user.name && user.name.length <= 120 ? user : null
-    })
+    }))
   }
   function roster(bytes, sync = false) {
     const root = fields(bytes)
-    return users(sync ? nested(root, 2, 2) : nested(root, 1, 2, 13, 1))
+    return users(sync ? everyNested(root, 2, 2) : everyNested(root, 1, 2, 13, 1))
   }
   function devices(bytes) {
     const root = fields(bytes)
-    return repeated(nested(root, 1, 2, 3), 2, (d) => {
+    return everyNested(root, 1, 2, 3).flatMap((map) => repeated(map, 2, (d) => {
       const streamId = str(d, 4)
       const deviceId = str(d, 6)
       if (num(d, 2) !== '1' || !streamId || !deviceId || streamId.length > 64 || deviceId.length > 512) return null
       return { streamId, deviceId, disabled: num(nested(d, 10), 1) === '1' }
-    })
+    }))
   }
   async function expand(blob, format) {
     const reader = blob.stream().pipeThrough(new DecompressionStream(format)).getReader()

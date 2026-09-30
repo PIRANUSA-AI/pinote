@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
-import { applyMeetEvent, applyUtterance, claimSelfVoice, nativeTranscript } from '../extension/meetTranscript.js'
+import { applyMeetEvent, applyUtterance, nativeTranscript } from '../extension/meetTranscript.js'
 
 function fakeIndexedDb() {
   const databases = new Map()
@@ -116,7 +116,7 @@ const noopEvent = { addListener() {} }
 const offscreenMessages = []
 let offscreenReply = { ok: true }
 const service = vm.createContext({
-  applyMeetEvent, applyUtterance, claimSelfVoice, nativeTranscript, Date, URL, crypto: globalThis.crypto, setTimeout, clearTimeout,
+  applyMeetEvent, applyUtterance, nativeTranscript, Date, URL, crypto: globalThis.crypto, setTimeout, clearTimeout,
   readConfig: async () => ({ apiBase: 'http://api' }),
   chrome: {
     tabs: { sendMessage: async () => {} },

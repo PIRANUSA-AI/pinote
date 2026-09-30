@@ -6,11 +6,12 @@ function lookup(state, id) {
   const person = Object.hasOwn(participants, id) ? participants[id] : null
   const parent = person?.parentId && Object.hasOwn(participants, person.parentId) ? participants[person.parentId] : null
   const self = id === state.meetSelfId && typeof state.meetSelfName === 'string' && state.meetSelfName ? state.meetSelfName : null
-  return parent?.name ?? person?.name ?? self
+  return person?.name ?? parent?.name ?? self
 }
 
 function resolveLine(state, line) {
-  if (line.fixedName) return
+  if (line.fixedName) return false
+  const before = `${line.participantId}\u0001${line.speaker}\u0001${line.identityResolved}`
   if (line.participantId.startsWith('csrc:')) {
     const streams = state.meetStreams ?? {}
     const streamId = line.participantId.slice(5)
@@ -19,86 +20,103 @@ function resolveLine(state, line) {
   const name = lookup(state, line.participantId)
   line.speaker = name ?? UNKNOWN
   line.identityResolved = Boolean(name)
+  return before !== `${line.participantId}\u0001${line.speaker}\u0001${line.identityResolved}`
 }
 
 function validId(value) {
   return typeof value === 'string' && value.length > 0 && value.length <= 512
 }
 
+const ANY_STREAM = 'csrc:*'
+const MAX_STREAMS = 4000
+
+function resolveAffected(state, affected) {
+  if (affected.size === 0) return false
+  const streams = affected.has(ANY_STREAM)
+  let changed = false
+  for (const line of state.lines) {
+    if (line.provenance !== 'meet-native' || line.fixedName) continue
+    const id = line.participantId
+    if (!affected.has(id) && !(streams && id.startsWith('csrc:'))) continue
+    if (resolveLine(state, line)) changed = true
+  }
+  return changed
+}
+
+function sameArray(a, b) {
+  return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, index) => value === b[index])
+}
+
 export function applyMeetEvent(state, message) {
   if (message.event === 'roster') {
     if (!Array.isArray(message.users)) return false
     const participants = state.meetParticipants ??= {}
+    const affected = new Set()
+    let rosterChanged = false
     for (const user of message.users.slice(0, 2000)) {
       if (!validId(user?.id) || typeof user.name !== 'string' || !user.name.trim() || user.name.length > 120) continue
+      const parentId = typeof user.parentId === 'string' ? user.parentId : ''
+      const prior = Object.hasOwn(participants, user.id) ? participants[user.id] : null
+      if (prior && prior.name === user.name && prior.parentId === parentId && prior.status === user.status) continue
       Object.defineProperty(participants, user.id, {
-        value: { name: user.name, parentId: typeof user.parentId === 'string' ? user.parentId : '', status: user.status },
+        value: { name: user.name, parentId, status: user.status },
         enumerable: true,
         writable: true,
         configurable: true,
       })
+      rosterChanged = true
+      if (!prior || prior.name !== user.name || prior.parentId !== parentId) affected.add(user.id)
     }
-    if (validId(message.selfId) && !state.meetSelfId) state.meetSelfId = message.selfId
-    for (const line of state.lines) if (line.provenance === 'meet-native') resolveLine(state, line)
-    state.attendance = [...new Set(Object.values(participants).filter((p) => p.status === '1' || !p.status).map((p) => p.name))].slice(0, 50)
-    return true
+    if (affected.size > 0) {
+      for (const [id, person] of Object.entries(participants)) {
+        if (person.parentId && affected.has(person.parentId)) affected.add(id)
+      }
+    }
+    if (validId(message.selfId) && state.meetSelfId !== message.selfId) {
+      state.meetSelfId = message.selfId
+      affected.add(message.selfId)
+      rosterChanged = true
+    }
+    const linesChanged = resolveAffected(state, affected)
+    const attendance = [...new Set(Object.values(participants).filter((p) => p.status === '1' || !p.status).map((p) => p.name))].slice(0, 50)
+    const attendanceChanged = !sameArray(attendance, state.attendance)
+    if (attendanceChanged) state.attendance = attendance
+    return rosterChanged || linesChanged || attendanceChanged
   }
 
   if (message.event === 'devices') {
     if (!Array.isArray(message.devices)) return false
     const streams = state.meetStreams ??= {}
+    let changed = false
     for (const device of message.devices.slice(0, 4000)) {
       if (typeof device?.streamId !== 'string' || !device.streamId || device.streamId.length > 64 || !validId(device.deviceId)) continue
+      if (Object.hasOwn(streams, device.streamId) && streams[device.streamId] === device.deviceId) continue
       Object.defineProperty(streams, device.streamId, { value: device.deviceId, enumerable: true, writable: true, configurable: true })
+      changed = true
     }
-    for (const line of state.lines) if (line.provenance === 'meet-native') resolveLine(state, line)
+    if (!changed) return false
+    const known = Object.keys(streams)
+    for (const streamId of known.slice(0, Math.max(0, known.length - MAX_STREAMS))) delete streams[streamId]
+    resolveAffected(state, new Set([ANY_STREAM]))
     return true
   }
 
-  if (message.event !== 'laneFinal') return false
-  if (!validId(message.participantId) || typeof message.text !== 'string') return false
-  const text = message.text.trim()
-  if (!text || text.length > 10000 || !state.startedAt) return false
-  if (state.lines.length >= MAX_LINES) {
-    state.error = 'Batas 20.000 potongan transkrip tercapai. Hentikan sesi dan mulai sesi baru.'
-    return true
-  }
-
-  const now = Date.now()
-  const startedAt = Number.isFinite(message.startedAt) ? Math.min(message.startedAt, now) : now
-  const offset = (at) => Math.max(0, (at - state.startedAt - (state.pausedTotalMs ?? 0)) / 1000)
-  state.nativeSequence = (state.nativeSequence ?? 0) + 1
-
-  const line = {
-    at: startedAt,
-    endAt: now,
-    startSec: offset(startedAt),
-    endSec: Math.max(offset(startedAt), offset(now)),
-    captionId: String(state.nativeSequence),
-    version: '1',
-    final: true,
-    participantId: message.participantId,
-    provenance: 'meet-native',
-    text,
-  }
-  if (message.voice === true) line.voice = true
-
-  if (typeof message.name === 'string' && message.name.trim()) {
-    line.fixedName = true
-    line.speaker = message.name.trim().slice(0, 120)
-    line.identityResolved = true
-  } else {
-    resolveLine(state, line)
-  }
-
-  state.lines.push(line)
-  state.partial = ''
-  return true
+  return false
 }
 
 const COUNTER = /^\d{1,20}$/
 const CHAT_PREFIX = 'Chat: '
-const RECENT_LINES = 500
+const lineIndexes = new WeakMap()
+
+function lineIndex(state) {
+  let index = lineIndexes.get(state.lines)
+  if (!index) {
+    index = new Map()
+    for (const line of state.lines) if (typeof line?.utteranceKey === 'string' && !line.frozen) index.set(line.utteranceKey, line)
+    lineIndexes.set(state.lines, index)
+  }
+  return index
+}
 
 function sameOrNewer(next, prior) {
   return BigInt(next) >= BigInt(prior)
@@ -125,9 +143,9 @@ export function applyUtterance(state, event) {
   const language = typeof event.language === 'string' ? event.language.slice(0, 32) : ''
   state.utteranceMeeting ??= event.meetingId
 
-  for (let i = state.lines.length - 1; i >= Math.max(0, state.lines.length - RECENT_LINES); i--) {
-    const line = state.lines[i]
-    if (line.utteranceKey !== key || line.frozen) continue
+  const index = lineIndex(state)
+  const line = index.get(key)
+  if (line && line.utteranceKey === key && !line.frozen) {
     if (!sameOrNewer(event.version, line.version)) {
       state.olderDrops = (state.olderDrops ?? 0) + 1
       return false
@@ -152,7 +170,7 @@ export function applyUtterance(state, event) {
     state.error = 'Batas 20.000 potongan transkrip tercapai. Hentikan sesi dan mulai sesi baru.'
     return true
   }
-  const line = {
+  const fresh = {
     at,
     endAt: at,
     startSec: offset(at),
@@ -167,69 +185,17 @@ export function applyUtterance(state, event) {
     text,
   }
   if (chat) {
-    line.chat = true
-    line.final = true
+    fresh.chat = true
+    fresh.final = true
   }
   if (speakerName) {
-    line.fixedName = true
-    line.speaker = speakerName
-    line.identityResolved = true
-  } else resolveLine(state, line)
-  state.lines.push(line)
+    fresh.fixedName = true
+    fresh.speaker = speakerName
+    fresh.identityResolved = true
+  } else resolveLine(state, fresh)
+  state.lines.push(fresh)
+  index.set(key, fresh)
   return true
-}
-
-const MATCH_MIN_WORDS = 3
-
-function wordSet(text) {
-  return new Set(String(text).toLowerCase().normalize('NFKC').replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter((word) => word.length > 1))
-}
-
-export function textOverlap(a, b) {
-  const left = wordSet(a)
-  const right = wordSet(b)
-  if (left.size < MATCH_MIN_WORDS || right.size < MATCH_MIN_WORDS) return 0
-  let common = 0
-  for (const word of left) if (right.has(word)) common++
-  return common / Math.min(left.size, right.size)
-}
-
-export function claimSelfVoice(state, text, startedAt, { windowMs = 20000, minimum = 0.5 } = {}) {
-  const now = Date.now()
-  const from = (Number.isFinite(startedAt) ? startedAt : now) - windowMs
-  const matches = new Map()
-  for (const line of state.lines) {
-    if (line.provenance !== 'meet-native' || line.chat || line.voice || !line.utteranceKey) continue
-    if (line.at < from || line.participantId === 'local') continue
-    if (textOverlap(line.text, text) < minimum) continue
-    const list = matches.get(line.participantId) ?? []
-    list.push(line)
-    matches.set(line.participantId, list)
-  }
-  let owner = state.meetSelfId && matches.has(state.meetSelfId) ? state.meetSelfId : null
-  if (!owner && !state.meetSelfId) {
-    let best = 0
-    for (const [participantId, list] of matches) {
-      if (list.length > best) {
-        best = list.length
-        owner = participantId
-      }
-    }
-  }
-  if (!owner) return null
-  if (!state.meetSelfId) {
-    state.meetSelfId = owner
-    for (const line of state.lines) {
-      if (line.participantId !== 'local') continue
-      line.participantId = owner
-      line.fixedName = false
-      resolveLine(state, line)
-    }
-  }
-  const removed = new Set(matches.get(owner).map((line) => line.utteranceKey))
-  state.selfSuppressed = [...(state.selfSuppressed ?? []), ...removed].slice(-500)
-  state.lines = state.lines.filter((line) => !removed.has(line.utteranceKey))
-  return owner
 }
 
 export function nativeTranscript(state) {

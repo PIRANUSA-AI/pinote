@@ -47,7 +47,7 @@ export class OpenAiRealtimeSession {
   private tagQueue: Array<string | null> = []
 
   constructor(
-    private readonly language: 'id' | 'en' | 'auto',
+    private readonly language: 'id' | 'en' | 'zh' | 'auto',
     private readonly handlers: LiveTranscriptionHandlers,
     private readonly sampleRate: number = LIVE_SAMPLE_RATE
   ) {}
@@ -164,7 +164,7 @@ export class OpenAiRealtimeSession {
   }
 
   private isHallucination(text: string): boolean {
-    if (this.language === 'auto') return false
+    if (this.language === 'auto' || this.language === 'zh') return false
     return mostlyForeign(text)
   }
 

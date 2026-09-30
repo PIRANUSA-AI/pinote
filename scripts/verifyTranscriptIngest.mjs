@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
-import { applyMeetEvent, applyUtterance, claimSelfVoice, nativeTranscript } from '../extension/meetTranscript.js'
+import { applyMeetEvent, applyUtterance, nativeTranscript } from '../extension/meetTranscript.js'
 import { nativeSegments, nativeTranscriptSchema } from '../backend/dist/lib/nativeTranscript.js'
 
 const base = { source: 'meet', meetingId: 'abc-defg-hij', participantId: 'spaces/s/devices/1', eventId: '10', version: '1', text: 'Halo', timestamp: Date.now() - 3000 }
@@ -102,7 +102,7 @@ assert.deepEqual(kept.map((s) => s.text), ['Versi besar'], 'Backend keeps only t
 const noopEvent = { addListener() {} }
 const tabMessages = []
 const service = vm.createContext({
-  applyMeetEvent, applyUtterance, claimSelfVoice, nativeTranscript, Date, URL, crypto: globalThis.crypto, setTimeout, clearTimeout,
+  applyMeetEvent, applyUtterance, nativeTranscript, Date, URL, crypto: globalThis.crypto, setTimeout, clearTimeout,
   chrome: {
     tabs: { sendMessage: async (tabId, message) => { tabMessages.push({ tabId, message }) } },
     sidePanel: { setPanelBehavior: async () => {} },
@@ -154,36 +154,22 @@ service.selfBatch = { type: 'meetNative', session: 's1', event: 'utterances', ut
   { ...base, participantId: 'spaces/s/devices/5', eventId: '72', text: 'Dari CC orang lain' },
 ] }
 await run('handleServiceMessage(selfBatch, { tab: { id: 42 }, frameId: 0 })')
-assert.deepEqual([...run('state.lines.map((l) => l.text)')], ['Chat saya', 'Dari CC orang lain'], 'With your mic on, Deepgram replaces Meet captions of your own voice, but chat and others stay')
-run("state.laneStats = { sockets: 0, errors: 1, errorAt: Date.now() }")
-await run("handleServiceMessage({ ...selfBatch, utterances: [{ ...selfBatch.utterances[0], eventId: '73', text: 'CC cadangan' }] }, { tab: { id: 42 }, frameId: 0 })")
-assert.ok(run("state.lines.some((l) => l.text === 'CC cadangan')"), 'When Deepgram fails, Meet captions of your voice come back')
-run("state.laneStats = null; state.meetStats = { localMic: false }")
-await run("handleServiceMessage({ ...selfBatch, utterances: [{ ...selfBatch.utterances[0], eventId: '74', text: 'Mic mati' }] }, { tab: { id: 42 }, frameId: 0 })")
-assert.ok(run("state.lines.some((l) => l.text === 'Mic mati')"), 'With your mic off, Meet captions are used')
+assert.deepEqual([...run('state.lines.map((l) => l.text)')], ['Dari CC saya', 'Chat saya', 'Dari CC orang lain'], 'Your own Meet captions are kept like everyone else, as the reference does')
 run("handleOffscreenEvent({ type: 'laneFinal', participantId: 'local', text: 'Dari Deepgram', startedAt: Date.now() - 1000 })")
-const deepgramLine = run("state.lines.find((l) => l.text === 'Dari Deepgram')")
-assert.equal(deepgramLine.participantId, 'spaces/s/devices/9', 'Deepgram lines carry your Meet device, so names and blocks line up')
+assert.equal(run('state.lines.length'), 3, 'Microphone audio never adds lines, so nobody else is labeled as you')
 
-run("Object.assign(state, { lines: [], meetSelfId: null, selfSuppressed: [], meetStats: { localMic: true }, laneStats: null, meetParticipants: { 'spaces/s/devices/8': { name: 'Yoel Andreas', parentId: '' } } })")
-run("handleOffscreenEvent({ type: 'laneFinal', participantId: 'local', text: 'Halo semua ini tes pertama', startedAt: Date.now() - 9000 })")
-assert.equal(run("state.lines.at(-1).participantId"), 'local', 'Before your device is known, Deepgram lines use your account')
+run("Object.assign(state, { lines: [], meetSelfId: null, meetStats: { localMic: true }, laneStats: null, meetParticipants: { 'spaces/s/devices/8': { name: 'Yoel Andreas', parentId: '' }, 'spaces/s/devices/5': { name: 'Reza', parentId: '' } } })")
 service.echoBatch = { type: 'meetNative', session: 's1', event: 'utterances', utterances: [
   { ...base, participantId: 'spaces/s/devices/8', eventId: '80', version: '3', text: 'oke deh udah udah cukup sih udah cukup thank you', timestamp: Date.now() - 4000 },
   { ...base, participantId: 'spaces/s/devices/5', eventId: '81', version: '1', text: 'aman oke sip lanjut aja', timestamp: Date.now() - 3000 },
 ] }
 await run('handleServiceMessage(echoBatch, { tab: { id: 42 }, frameId: 0 })')
-assert.equal(run('state.lines.length'), 3)
-run("handleOffscreenEvent({ type: 'laneFinal', participantId: 'local', text: 'Oke deh, udah udah cukup sih, udah cukup. Thank you thank you.', startedAt: Date.now() - 5000 })")
-assert.equal(run('state.meetSelfId'), 'spaces/s/devices/8', 'The Meet caption that matches your Deepgram words reveals your device')
-assert.deepEqual([...run("state.lines.map((l) => l.participantId + ':' + l.text.slice(0, 12))")], [
-  'spaces/s/devices/8:Halo semua i',
-  'spaces/s/devices/5:aman oke sip',
-  'spaces/s/devices/8:Oke deh, uda',
-], 'The duplicate Meet caption is removed, and earlier Deepgram lines move to your device')
-assert.equal(run('state.lines[0].speaker'), 'Yoel Andreas', 'Your lines take your Meet name')
-await run("handleServiceMessage({ ...echoBatch, utterances: [{ ...echoBatch.utterances[0], version: '4', text: 'oke deh udah udah cukup sih udah cukup thank you thank you' }] }, { tab: { id: 42 }, frameId: 0 })")
-assert.equal(run('state.lines.length'), 3, 'Later revisions of a removed caption never come back')
+run("handleOffscreenEvent({ type: 'laneFinal', participantId: 'local', text: 'aman oke sip lanjut aja', startedAt: Date.now() - 3000 })")
+assert.equal(run('state.meetSelfId'), null, 'Words heard by your microphone never decide which device is yours')
+assert.deepEqual([...run("state.lines.map((l) => l.speaker + ':' + l.text.slice(0, 12))")], [
+  'Yoel Andreas:oke deh udah',
+  'Reza:aman oke sip',
+], 'Each line keeps the speaker Meet attached to it')
 
 const switches = () => tabMessages.filter((m) => m.message.type === 'switchLanguage').map((m) => m.message.code)
 const japanese = 'その朝の空はまだ少し曇っていたけれど、空気はひんやりと気持ちよかった。'

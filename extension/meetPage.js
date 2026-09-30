@@ -4,7 +4,7 @@
   const protocol = globalThis.RekapinMeetProtocol
   const origin = location.origin
   const STATS_MS = 2000
-  const FLUSH_MS = 500
+  const FLUSH_MS = 150
   const REOPEN_MS = 1000
   const PEER_WAIT_MS = 100
   const DUPLICATE_MS = 700
@@ -18,6 +18,13 @@
   const SPEAKING_RECENT_MS = 30000
   const SILENCE_CHECK_MS = 10000
   const RECOVERY_LIMIT = 3
+  const REARM_MS = 300000
+  const REUSE_MS = 8000
+  const UTTERANCE_LIMIT = 4000
+  const STEP_MS = 10000
+  const LANGUAGE_RETRY_MAX_MS = 30000
+  const MISMATCH_COUNT = 3
+  const MISMATCH_GAP_MS = 15000
   const SPEECH_LEVEL = 0.02
   const SPEECH_SCAN_MS = 1000
   const CAPTION_LABELS = ['captions', 'captions_v2']
@@ -28,7 +35,7 @@
   const SPEAKING_SELECTOR = '.IisKdb.GF8M7d'
   const LANGUAGE_LISTBOX = '[role="listbox"].W7g1Rb-rymPhb.O68mGe-hqgu2c'
   const DEVICE_PATTERN = /spaces\/[A-Za-z0-9_-]+\/devices\/[A-Za-z0-9_-]+/
-  const LANGUAGES = { id: 'id-ID', en: 'en-US' }
+  const LANGUAGES = { id: 'id-ID', en: 'en-US', zh: 'cmn-Hans-CN' }
   const FALLBACK_LANGUAGE = 'id-ID'
   const detector = globalThis.RekapinLanguage
   const AUTO_MIN_TOKENS = 5
@@ -36,7 +43,6 @@
   const AUTO_MIN_CONFIDENCE = 0.6
   const AUTO_EVIDENCE = 2
   const AUTO_REEVALUATE_CHARS = 30
-  const LOCAL_OWNER = 'local'
   const PROBE_ENGINE = 'qwen'
   const PROBE_OWNER = 'probe'
   const PROBE_LANE = 9001
@@ -50,8 +56,6 @@
   const SILENCE_FLUSH_MS = 700
   const LOCAL_SCAN_MS = 250
   const SELF_VOICE_WINDOW_MS = 3000
-  const SELF_VOTES = 3
-  const SELF_RATIO = 0.75
   const RPC = {
     modify: 'https://meet.google.com/hangouts/v1_meetings/media_sessions/modify',
     queryLanguage: 'https://meet.google.com/hangouts/v1_meetings/media_sessions/query',
@@ -74,12 +78,24 @@
   const delivered = new Set()
   const recentText = new Map()
   const aliases = new Map()
+  const utterances = new Map()
+  const channelPeer = new WeakMap()
+  const collectionPeers = new WeakSet()
   const LOG_LIMIT = 6000
   const captionLog = []
   window.__rekapinCaptionLog = captionLog
   let sessionStart = Date.now()
   let session = null
+  let lastSession = null
+  let lastRequested
   let language = ''
+  let confirmedLanguage = ''
+  let captionLanguage = ''
+  let languageTries = 0
+  let languageRetryTimer = null
+  let mismatches = 0
+  let mismatchAt = 0
+  let escalatedAt = 0
   let meetLanguage = ''
   let mediaSessionId = ''
   let selfDevice = ''
@@ -119,7 +135,6 @@
     lastReason: '',
   }
   const local = { lane: null, sending: false, voiceAt: 0, counter: 0, timer: null, probe: { remaining: 0, silence: 0, lastAt: 0, startedAt: 0 } }
-  const selfVotes = new Map()
   const freshStats = () => ({
     packets: 0, control: 0, captions: 0, chats: 0, rejected: 0, reason: '', sent: 0, recoveries: 0,
     languageState: '', languageSends: 0, languageSwitches: 0, suggestions: 0, ackLagMs: 0, localChunks: 0, probeChunks: 0, error: '',
@@ -176,7 +191,10 @@
         revisions: sessionUtterances.size ? Math.round((stats.captions / sessionUtterances.size) * 10) / 10 : 0,
         language,
         meetLanguage,
+        confirmedLanguage,
+        captionLanguage,
         languageState: stats.languageState,
+        captionPeer: captionPeer?.connectionState ?? '',
         mediaSessionId: Boolean(mediaSessionId),
         selfDevice: Boolean(selfDevice),
         error: stats.error,
@@ -189,9 +207,16 @@
   }
 
   function applyUsers(users) {
-    for (const user of users) registry.set(user.id, user)
+    let changed = false
+    for (const user of users) {
+      const prior = registry.get(user.id)
+      if (prior && prior.name === user.name && prior.parentId === user.parentId && prior.status === user.status && prior.self === user.self) continue
+      registry.delete(user.id)
+      registry.set(user.id, user)
+      changed = true
+    }
     while (registry.size > 2000) registry.delete(registry.keys().next().value)
-    emitRoster()
+    if (changed) emitRoster()
   }
 
   function noteSelf(text) {
@@ -313,6 +338,56 @@
     stats.languageState = 'diganti di Meet'
   }
 
+  function resolveLanguage(code) {
+    if (typeof code !== 'string' || !code) return ''
+    if (Object.hasOwn(LANGUAGES, code)) return LANGUAGES[code]
+    return protocol.languageId(code) === null ? '' : code
+  }
+
+  function textHead(text) {
+    return String(text ?? '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+  }
+
+  function sameStart(a, b) {
+    const x = textHead(a)
+    const y = textHead(b)
+    const size = Math.min(x.length, y.length, 12)
+    return size === 0 || x.slice(0, size) === y.slice(0, size)
+  }
+
+  function eventFor(utteranceId, caption, now) {
+    const raw = `${utteranceId}/${caption.deviceId}`
+    let entry = utterances.get(raw)
+    if (!entry) entry = { eventId: utteranceId, generation: 0, version: caption.version, text: caption.text, at: now }
+    else {
+      const reused = now - entry.at > REUSE_MS && caption.text !== entry.text
+        && (BigInt(caption.version) <= BigInt(entry.version) || !sameStart(entry.text, caption.text))
+      if (reused) {
+        entry.generation++
+        entry.eventId = digits(`${raw}#${entry.generation}`)
+        trace({ r: 'reused', id: utteranceId, as: entry.eventId, v: caption.version })
+      }
+      if (reused || BigInt(caption.version) >= BigInt(entry.version)) {
+        entry.version = caption.version
+        entry.text = caption.text
+      }
+      entry.at = now
+    }
+    utterances.delete(raw)
+    utterances.set(raw, entry)
+    while (utterances.size > UTTERANCE_LIMIT) utterances.delete(utterances.keys().next().value)
+    return entry.eventId
+  }
+
+  function clearDedupe() {
+    firstSeen.clear()
+    delivered.clear()
+    recentText.clear()
+    aliases.clear()
+    utterances.clear()
+    pendingUtterances.clear()
+  }
+
   function prune(map, now, age) {
     if (map.size <= RECENT_LIMIT) return
     for (const [key, entry] of map) if (now - entry.at > age) map.delete(key)
@@ -343,7 +418,7 @@
   function queueEntry(key, entry, stamp) {
     const now = Date.now()
     if (!firstSeen.has(key)) firstSeen.set(key, stamp ?? now)
-    while (firstSeen.size > 4000) firstSeen.delete(firstSeen.keys().next().value)
+    while (firstSeen.size > UTTERANCE_LIMIT) firstSeen.delete(firstSeen.keys().next().value)
     const prior = pendingUtterances.get(key)
     if (prior && BigInt(prior.version) > BigInt(entry.version)) return false
     pendingUtterances.set(key, {
@@ -370,12 +445,17 @@
     if (!session) return trace({ ...entry, r: 'noSession' })
     if (!caption.text) return trace({ ...entry, r: 'empty' })
     caption.messageId = `${caption.utteranceId}/${caption.deviceId}`
-    const utteranceId = dedupe ? canonical(caption, Date.now()) : caption.utteranceId
+    const now = Date.now()
+    lastPacketAt = now
+    recoveries = 0
+    escalated = false
+    const canonicalId = dedupe ? canonical(caption, now) : caption.utteranceId
+    const utteranceId = eventFor(canonicalId, caption, now)
     const key = `${utteranceId}/${caption.deviceId}`
+    noteCaptionLanguage(caption.language)
     const isNew = !firstSeen.has(key)
     sessionUtterances.add(key)
-    while (sessionUtterances.size > 4000) sessionUtterances.delete(sessionUtterances.values().next().value)
-    if (isNew) voteSelf(caption.deviceId)
+    while (sessionUtterances.size > UTTERANCE_LIMIT) sessionUtterances.delete(sessionUtterances.values().next().value)
     observeLanguage(caption, key, isNew)
     const accepted = queueEntry(key, {
       eventId: utteranceId,
@@ -393,8 +473,15 @@
     if (captionLog.length > LOG_LIMIT) captionLog.splice(0, captionLog.length - LOG_LIMIT)
   }
 
-  function switchLanguage(code, reason) {
-    if (!code || code === language || protocol.languageId(code) === null) return
+  function switchLanguage(value, reason) {
+    const code = resolveLanguage(value)
+    if (!code) return
+    if (code === language) {
+      if (confirmedLanguage !== code && !languageWaiter) sendLanguage(true)
+      return
+    }
+    resetLanguageRetry()
+    mismatches = 0
     language = code
     meetLanguage = code
     auto.lastReason = reason
@@ -452,19 +539,6 @@
     auto.memory.set(device, code)
     while (auto.memory.size > 200) auto.memory.delete(auto.memory.keys().next().value)
     if (code !== language) suggest(code, 'evidence')
-  }
-
-  function voteSelf(device) {
-    if (selfDevice || !local.lane || typeof device !== 'string') return
-    const entry = selfVotes.get(device) ?? { self: 0, other: 0 }
-    if (local.sending && Date.now() - local.voiceAt <= SELF_VOICE_WINDOW_MS) entry.self++
-    else entry.other++
-    selfVotes.set(device, entry)
-    if (entry.self >= SELF_VOTES && entry.self / (entry.self + entry.other) >= SELF_RATIO) {
-      selfDevice = device
-      trace({ r: 'selfDevice', dev: device.slice(-8) })
-      emitRoster()
-    }
   }
 
   function localSending(sender) {
@@ -537,10 +611,7 @@
     lane.filled = 0
     const now = Date.now()
     if (lane.muted || !session) {
-      if (lane.speaking) {
-        lane.speaking = false
-        emit('laneFlush', { lane: lane.id })
-      }
+      lane.speaking = false
       return
     }
     const voiced = rms >= SPEECH_FLOOR
@@ -553,14 +624,7 @@
       }
     }
     probeStep(lane, now)
-    if (!lane.speaking) return
-    const pcm = lane.buffer.slice(0)
-    stats.localChunks++
-    emit('lane', { lane: lane.id, owner: LOCAL_OWNER, startedAt: lane.startedAt, language, pcm: pcm.buffer }, [pcm.buffer])
-    if (!voiced && now - lane.lastVoiceAt >= SILENCE_FLUSH_MS) {
-      lane.speaking = false
-      emit('laneFlush', { lane: lane.id })
-    }
+    if (lane.speaking && !voiced && now - lane.lastVoiceAt >= SILENCE_FLUSH_MS) lane.speaking = false
   }
 
   function ingestLocal(lane, frame) {
@@ -598,7 +662,6 @@
     const lane = local.lane
     if (!lane) return
     local.lane = null
-    if (lane.speaking && session) emit('laneFlush', { lane: lane.id })
     lane.reader.cancel().catch(() => {})
   }
 
@@ -677,7 +740,7 @@
     if (!pendingUtterances.size) return
     const utterances = [...pendingUtterances.values()]
     for (const key of pendingUtterances.keys()) delivered.add(key)
-    while (delivered.size > 4000) delivered.delete(delivered.values().next().value)
+    while (delivered.size > UTTERANCE_LIMIT) delivered.delete(delivered.values().next().value)
     pendingUtterances.clear()
     for (let i = 0; i < utterances.length; i += 200) {
       stats.sent += Math.min(200, utterances.length - i)
@@ -688,6 +751,12 @@
   function reject(reason) {
     stats.rejected++
     stats.reason = reason
+  }
+
+  function step(task) {
+    let timer = null
+    const limit = new Promise((resolve) => { timer = setTimeout(resolve, STEP_MS) })
+    return Promise.race([task(), limit]).finally(() => clearTimeout(timer))
   }
 
   async function bytesOf(data) {
@@ -749,26 +818,24 @@
     }
     const arrived = Date.now()
     stats.packets++
-    lastPacketAt = arrived
-    recoveries = 0
-    escalated = false
+    if (lastPacketAt === null) lastPacketAt = arrived
     if (channel.label === 'captions_v2') {
       const raw = syncBytes(event.data)
       if (raw) {
         handleV2(channel, raw, arrived)
         return
       }
-      captionQueue = captionQueue.then(async () => {
+      captionQueue = captionQueue.then(() => step(async () => {
         const bytes = await bytesOf(event.data)
         if (bytes) handleV2(channel, bytes, arrived)
         else reject('notBinary')
-      }).catch((err) => {
+      })).catch((err) => {
         reject('exception')
         noteError(err)
       })
       return
     }
-    captionQueue = captionQueue.then(async () => {
+    captionQueue = captionQueue.then(() => step(async () => {
       const raw = await bytesOf(event.data)
       if (!raw) return reject('notBinary')
       const bytes = await protocol.unwrap(raw)
@@ -786,7 +853,7 @@
       }
       trace({ c: 'v1', r: `reject:${parsed.reason}`, n: bytes.byteLength })
       reject(parsed.reason)
-    }).catch((err) => {
+    })).catch((err) => {
       reject('exception')
       noteError(err)
     })
@@ -794,11 +861,11 @@
 
   function onChatPacket(data) {
     if (!session) return
-    chatQueue = chatQueue.then(async () => {
+    chatQueue = chatQueue.then(() => step(async () => {
       const raw = await bytesOf(data)
       if (!raw) return
       queueChat(protocol.chatMessage(await protocol.unwrap(raw)))
-    }).catch(() => {})
+    })).catch(() => {})
   }
 
   function listenCaptions(channel) {
@@ -861,6 +928,7 @@
 
   function track(peer, channel) {
     trace({ c: channel.label, r: 'opened', own: ours.has(channel) })
+    channelPeer.set(channel, peer)
     opened.add(channel)
     latest.set(channel.label, channel)
     keepOpen(peer, channel)
@@ -885,7 +953,8 @@
       return
     }
     for (const channel of opened) {
-      if (ours.has(channel) && CAPTION_LABELS.includes(channel.label) && ['open', 'connecting'].includes(channel.readyState)) return
+      if (!ours.has(channel) || !CAPTION_LABELS.includes(channel.label) || !usable(channelPeer.get(channel))) continue
+      if (['open', 'connecting'].includes(channel.readyState)) return
     }
     openCaptionPair(peer)
   }
@@ -897,15 +966,82 @@
     if (session) startCaptions()
   }
 
+  function onPeerState(peer) {
+    const state = peer.connectionState
+    if (state === 'closed') peers.delete(peer)
+    else peers.add(peer)
+    trace({ r: `peerState:${state}`, own: captionPeer === peer })
+    if (!usable(peer)) {
+      if (captionPeer === peer) captionPeer = null
+      return
+    }
+    if (!collectionPeers.has(peer)) return
+    if (!usable(captionPeer)) adoptPeer(peer)
+    else if (captionPeer === peer && session && state === 'connected') startCaptions()
+  }
+
+  function resetLanguageRetry() {
+    clearTimeout(languageRetryTimer)
+    languageRetryTimer = null
+    languageTries = 0
+  }
+
+  function retryLanguage() {
+    if (!session || languageRetryTimer) return
+    if (languageTries >= RETRY_LIMIT) {
+      stats.languageState = 'gagal'
+      return
+    }
+    const delay = Math.min(RETRY_MS * 2 ** languageTries, LANGUAGE_RETRY_MAX_MS)
+    languageTries++
+    languageRetryTimer = setTimeout(() => {
+      languageRetryTimer = null
+      if (!session || confirmedLanguage === language) return
+      trace({ r: 'languageRetry', tail: language, v: String(languageTries) })
+      sendLanguage(true)
+    }, delay)
+  }
+
   function settleLanguage(result) {
     if (!languageWaiter) return
     clearTimeout(languageWaiter.timer)
+    const code = languageWaiter.code
     languageWaiter = null
     stats.languageState = result
-    if (result === 'timeout' || result === 'unavailable') {
-      reassertLanguage = true
-      sendLanguage(true, false)
+    if (result === 'ok') {
+      if (code === language) {
+        confirmedLanguage = code
+        resetLanguageRetry()
+      }
+      return
     }
+    if (code === language && confirmedLanguage === language) {
+      stats.languageState = 'ok'
+      resetLanguageRetry()
+      return
+    }
+    if (result === 'unavailable') reassertLanguage = true
+    retryLanguage()
+  }
+
+  function noteCaptionLanguage(code) {
+    if (!code || protocol.languageId(code) === null) return
+    captionLanguage = code
+    if (code === language) {
+      mismatches = 0
+      confirmedLanguage = code
+      return
+    }
+    if (!session || !language || languageWaiter || languageRetryTimer) return
+    if (++mismatches < MISMATCH_COUNT) return
+    mismatches = 0
+    const now = Date.now()
+    if (now - mismatchAt < MISMATCH_GAP_MS) return
+    mismatchAt = now
+    if (confirmedLanguage === language) confirmedLanguage = ''
+    resetLanguageRetry()
+    trace({ r: 'languageMismatch', tail: code })
+    sendLanguage(true)
   }
 
   function sendLanguage(force = false, confirm = true) {
@@ -936,11 +1072,12 @@
     if (!confirm) return
     if (languageWaiter) clearTimeout(languageWaiter.timer)
     stats.languageState = 'menunggu'
-    languageWaiter = { timer: setTimeout(() => settleLanguage('timeout'), LANGUAGE_ACK_MS) }
+    languageWaiter = { code: language, timer: setTimeout(() => settleLanguage('timeout'), LANGUAGE_ACK_MS) }
   }
 
-  function onMediaMessage(event) {
-    mediaQueue = mediaQueue.then(async () => {
+  function onMediaMessage(channel, event) {
+    mediaQueue = mediaQueue.then(() => step(async () => {
+      if (mediaSession !== channel) return
       const raw = await bytesOf(event.data)
       if (!raw) return
       const bytes = await protocol.unwrap(raw)
@@ -951,22 +1088,25 @@
         lastIncoming = seq
         settleLanguage('ok')
       } else settleLanguage('ditolak')
-    }).catch(() => {})
+    })).catch(() => {})
   }
 
   function adoptMediaSession(channel) {
-    if (languageWaiter) settleLanguage('unavailable')
+    if (languageWaiter) {
+      clearTimeout(languageWaiter.timer)
+      languageWaiter = null
+    }
+    resetLanguageRetry()
+    if (mediaSession && mediaSession !== channel) confirmedLanguage = ''
     mediaSession = channel
     lastOp = 0
     lastSeq = 0
     lastIncoming = 0
-    channel.addEventListener('message', onMediaMessage)
+    channel.addEventListener('message', (event) => onMediaMessage(channel, event))
     const ready = () => {
       if (mediaSession !== channel) return
-      if (reassertLanguage) {
-        reassertLanguage = false
-        sendLanguage(true, false)
-      } else sendLanguage()
+      reassertLanguage = false
+      sendLanguage(true)
     }
     if (channel.readyState === 'open') ready()
     else channel.addEventListener('open', ready, { once: true })
@@ -976,14 +1116,14 @@
     channel.addEventListener('message', (event) => {
       if (pending >= 100) return
       pending++
-      collectionQueue = collectionQueue.then(async () => {
+      collectionQueue = collectionQueue.then(() => step(async () => {
         const bytes = await protocol.packet(event.data, true)
         const users = protocol.roster(bytes)
         if (users.length) applyUsers(users)
         const devices = protocol.devices(bytes)
         if (devices.length) applyDevices(devices)
         queueChat(protocol.chatMessage(bytes))
-      }).catch(() => {}).finally(() => { pending-- })
+      })).catch(() => {}).finally(() => { pending-- })
     })
   }
 
@@ -991,6 +1131,7 @@
     if (seen.has(channel)) return
     seen.add(channel)
     if (channel.label === 'collections') {
+      collectionPeers.add(peer)
       adoptPeer(peer)
       observeCollections(channel)
     } else if (channel.label === MEDIA_LABEL) {
@@ -1061,15 +1202,19 @@
         const peer = Reflect.construct(target, args, newTarget)
         peerCount++
         peers.add(peer)
-        peer.addEventListener('connectionstatechange', () => {
-          if (usable(peer)) return
-          peers.delete(peer)
-          if (captionPeer === peer) captionPeer = null
-        })
+        peer.addEventListener('connectionstatechange', () => onPeerState(peer))
         peer.addEventListener('datachannel', (event) => observe(peer, event.channel, false))
         return peer
       },
     })
+    const originalClose = Original.prototype.close
+    if (typeof originalClose === 'function') {
+      Original.prototype.close = function (...args) {
+        const result = Reflect.apply(originalClose, this, args)
+        try { if (peers.has(this)) onPeerState(this) } catch {}
+        return result
+      }
+    }
   }
 
   function decodeBase64(text) {
@@ -1209,17 +1354,28 @@
     const silent = now - lastPacketAt
     if (silent < SILENCE_MS || now - speakingAt > SPEAKING_RECENT_MS) return
     if (recoveries >= RECOVERY_LIMIT) {
-      if (escalated) return
-      escalated = true
-      lastPacketAt = now
-      toggleCaptionsTwice().catch(() => {})
-      return
+      if (escalated) {
+        if (now - escalatedAt < REARM_MS) return
+        recoveries = 0
+        escalatedAt = now
+      } else {
+        escalated = true
+        escalatedAt = now
+        lastPacketAt = now
+        toggleCaptionsTwice().catch(() => {})
+        return
+      }
     }
     recoveries++
     stats.recoveries++
     trace({ r: 'recovery', n: Math.round(silent / 1000) })
     lastPacketAt = now
-    if (usable(captionPeer) && captionPeer.connectionState === 'connected') openCaptionPair(captionPeer)
+    const peer = usable(captionPeer) ? captionPeer : [...peers].find((item) => collectionPeers.has(item) && usable(item))
+    if (peer && peer !== captionPeer) {
+      adoptPeer(peer)
+      return
+    }
+    if (usable(peer) && peer.connectionState === 'connected') openCaptionPair(peer)
   }
 
   function selectListboxLanguage(listbox) {
@@ -1251,6 +1407,7 @@
     clearTimeout(waitTimer)
     if (languageWaiter) clearTimeout(languageWaiter.timer)
     languageWaiter = null
+    resetLanguageRetry()
     statsTimer = flushTimer = silenceTimer = speechTimer = waitTimer = local.timer = null
     stopLocalLane()
     local.probe.remaining = 0
@@ -1263,21 +1420,29 @@
     if (event.source !== window || event.origin !== origin || data?.bridge !== 'rekapin-meet-control-v1') return
     if (data.type === 'start' && typeof data.session === 'string') {
       if (session) stopSession()
+      const resumed = data.session === lastSession && data.language === lastRequested
+      if (data.session !== lastSession) clearDedupe()
       session = data.session
+      lastSession = data.session
+      lastRequested = data.language
       captionLog.length = 0
       sessionStart = Date.now()
       trace({ r: 'start', tail: String(data.language ?? ''), n: peers.size })
       const autoMode = data.language === 'auto'
-      const wanted = LANGUAGES[data.language] ?? ''
+      const wanted = resolveLanguage(data.language)
       const resumeAuto = autoMode && auto.enabled && Boolean(language)
       auto.enabled = autoMode
-      language = wanted || (resumeAuto ? language : FALLBACK_LANGUAGE)
+      language = resumed && language ? language : wanted || (resumeAuto ? language : FALLBACK_LANGUAGE)
       guard.advise(language)
       languageAt = 0
+      resetLanguageRetry()
+      mismatches = 0
+      mismatchAt = 0
       lastPacketAt = null
       speakingAt = null
       recoveries = 0
       escalated = false
+      escalatedAt = 0
       resetStats()
       pendingUtterances.clear()
       statsTimer = setInterval(reportStats, STATS_MS)

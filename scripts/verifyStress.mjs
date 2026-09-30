@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import { performance } from 'node:perf_hooks'
-import { applyMeetEvent, applyUtterance, claimSelfVoice, nativeTranscript } from '../extension/meetTranscript.js'
+import { applyMeetEvent, applyUtterance, nativeTranscript } from '../extension/meetTranscript.js'
 import { combineLines } from '../extension/transcriptBlocks.js'
 import { findActions } from '../extension/actionItems.js'
 import { talkTime } from '../extension/talkTime.js'
@@ -19,7 +19,7 @@ let panelUpdates = 0
 let largestPanelMessage = 0
 const noopEvent = { addListener() {} }
 const service = vm.createContext({
-  applyMeetEvent, applyUtterance, claimSelfVoice, nativeTranscript, Date, URL, crypto: globalThis.crypto, setTimeout, clearTimeout,
+  applyMeetEvent, applyUtterance, nativeTranscript, Date, URL, crypto: globalThis.crypto, setTimeout, clearTimeout,
   chrome: {
     tabs: { sendMessage: async () => {} },
     sidePanel: { setPanelBehavior: async () => {} },
@@ -96,7 +96,7 @@ for (let i = 0; i < 60; i++) {
   await new Promise((resolve) => setTimeout(resolve, 50))
 }
 const liveSeconds = (performance.now() - liveStarted) / 1000
-assert.ok(panelUpdates <= Math.ceil(liveSeconds / 0.3) + 1, `The panel gets at most one update per 300 ms (${panelUpdates} in ${liveSeconds.toFixed(1)} s)`)
+assert.ok(panelUpdates <= Math.ceil(liveSeconds / 0.1) + 1, `The panel gets at most one update per 100 ms (${panelUpdates} in ${liveSeconds.toFixed(1)} s)`)
 assert.ok(writes <= Math.ceil(liveSeconds / 2) + 1, `Storage is written at most once per 2 s (${writes} in ${liveSeconds.toFixed(1)} s)`)
 assert.ok(largestPanelMessage < 50000, `Panel updates carry only changed lines, not the whole meeting (${largestPanelMessage} bytes)`)
 

@@ -1,7 +1,7 @@
 import { readConfig } from './config.js'
 import './languageDetect.js'
 import './recoveryStore.js'
-import { applyMeetEvent, applyUtterance, claimSelfVoice, nativeTranscript } from './meetTranscript.js'
+import { applyMeetEvent, applyUtterance, nativeTranscript } from './meetTranscript.js'
 import { combineLines } from './transcriptBlocks.js'
 
 const ACTIVE_STATUSES = ['starting', 'recording', 'uploading', 'uploadFailed']
@@ -9,8 +9,6 @@ const MENU_ID = 'mulaiRekapin'
 const SPEAKER_MEMORY_MS = 10 * 60 * 1000
 const SPEAKER_TAIL_MS = 1200
 const MERGE_WINDOW_MS = 4000
-const SELF_VOICE_ERROR_MS = 15000
-const SELF_VOICE_RECENT_MS = 15000
 const VOICE_MIN_CONFIDENCE = 0.8
 const VOICE_SCRIPT_CONFIDENCE = 0.9
 const VOICE_MIN_TOKENS = 5
@@ -19,6 +17,7 @@ const DISMISS_LANGUAGE_MS = 120000
 const MEETING_PATTERNS = ['https://meet.google.com/*', 'https://*.zoom.us/*', 'https://web.whatsapp.com/*', 'https://teams.microsoft.com/*', 'https://teams.live.com/*', 'https://teams.cloud.microsoft/*']
 const CAPTION_SOURCES = ['zoom', 'teams']
 const CAPTION_FRESH_MS = 45000
+const PAUSE_FLUSH_MS = 3000
 const LIVE_QUIET_REFRESH_MS = 5000
 let liveQuietSentAt = 0
 const TEAMS_URL =/^https:\/\/teams\.(microsoft\.com|live\.com|cloud\.microsoft)\//
@@ -52,8 +51,6 @@ const state = {
   language: null,
   meetSelfId: null,
   meetSelfName: null,
-  selfSuppressed: [],
-  selfVoiceAt: null,
   voiceLanguages: {},
   languageSuggestion: null,
   dismissedLanguages: {},
@@ -79,13 +76,6 @@ let speakerEvents = []
 let selfName = 'Saya'
 let lastLiveError = null
 let roster = []
-
-chrome.storage.local
-  .get('displayName')
-  .then((stored) => {
-    if (stored?.displayName) selfName = stored.displayName
-  })
-  .catch(() => {})
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local' || !changes.displayName) return
@@ -184,15 +174,29 @@ function interruptedMessage() {
     : 'Sesi sebelumnya terputus sebelum rekaman sempat terkirim. Transkrip langsung di bawah masih tersimpan.'
 }
 
+async function captureRunning(status) {
+  const alive = await chrome.offscreen.hasDocument().catch(() => false)
+  if (!alive) return false
+  if (status !== 'recording' && status !== 'starting') return true
+  const reply = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'captureAlive' }).catch(() => null)
+  return reply?.ok !== false
+}
+
 async function restoreState() {
   try {
-    const stored = await chrome.storage.local.get('liveState')
+    const stored = await chrome.storage.local.get(['liveState', 'liveLines', 'liveMemory', 'displayName'])
+    if (stored?.displayName) selfName = stored.displayName
     const saved = stored?.liveState
     if (!saved) return
     Object.assign(state, saved)
+    state.lines = Array.isArray(stored.liveLines) ? stored.liveLines : Array.isArray(saved.lines) ? saved.lines : []
+    const memory = stored.liveMemory
+    if (memory && memory.sessionId === saved.sessionId) {
+      if (Array.isArray(memory.speakerEvents)) speakerEvents = memory.speakerEvents
+      if (Array.isArray(memory.roster)) roster = memory.roster
+    }
     if (!ACTIVE_STATUSES.includes(saved.status)) return
-    const alive = await chrome.offscreen.hasDocument().catch(() => false)
-    if (alive) return
+    if (await captureRunning(saved.status)) return
     state.status = 'interrupted'
     state.paused = false
     state.pausedAt = null
@@ -206,9 +210,9 @@ async function restoreState() {
 
 const ready = restoreState()
 
-const BROADCAST_MS = 300
+const BROADCAST_MS = 100
 const PERSIST_MS = 2000
-const FREQUENT_EVENTS = new Set(['laneStats', 'languageProbe', 'lanePartial', 'laneFinal', 'livePartial', 'liveFinal'])
+const FREQUENT_EVENTS = new Set(['laneStats', 'languageProbe', 'livePartial', 'liveFinal'])
 let broadcastTimer = null
 let persistTimer = null
 
@@ -217,13 +221,43 @@ function broadcastSoon() {
   broadcastTimer = setTimeout(() => broadcast(false), BROADCAST_MS)
 }
 
+let persistedMeta = ''
+let persistedMemory = ''
+let linesDirty = true
+
 function persistNow() {
   clearTimeout(persistTimer)
   persistTimer = null
-  chrome.storage.local.set({ liveState: { ...state } }).catch(() => {})
+  const { lines, meetStats, laneStats, ...meta } = state
+  const payload = {}
+  const metaJson = JSON.stringify(meta)
+  if (metaJson !== persistedMeta) {
+    payload.liveState = meta
+    persistedMeta = metaJson
+  }
+  if (linesDirty) {
+    payload.liveLines = lines ?? []
+    linesDirty = false
+  }
+  const memory = { sessionId: state.sessionId, speakerEvents, roster }
+  const memoryJson = JSON.stringify(memory)
+  if (memoryJson !== persistedMemory) {
+    payload.liveMemory = memory
+    persistedMemory = memoryJson
+  }
+  if (Object.keys(payload).length > 0) chrome.storage.local.set(payload).catch(() => {})
 }
 
-let linesSeq = 0
+function forgetPersisted() {
+  clearTimeout(persistTimer)
+  persistTimer = null
+  persistedMeta = ''
+  persistedMemory = ''
+  linesDirty = true
+  chrome.storage.local.remove(['liveState', 'liveLines', 'liveMemory']).catch(() => {})
+}
+
+let linesSeq = Date.now()
 let sentSignatures = []
 
 function lineSignature(line) {
@@ -237,6 +271,7 @@ function linesDelta() {
   const limit = Math.min(signatures.length, sentSignatures.length)
   let from = 0
   while (from < limit && sentSignatures[from] === signatures[from]) from++
+  if (from < signatures.length || signatures.length !== sentSignatures.length) linesDirty = true
   sentSignatures = signatures
   linesSeq += 1
   return { seq: linesSeq, from, tail: lines.slice(from), total: lines.length }
@@ -249,7 +284,11 @@ function broadcast(urgent = true) {
   chrome.runtime.sendMessage({ target: 'panel', type: 'state', state: rest, lines: linesDelta() }).catch(() => {})
   if (state.liveShare?.token) scheduleLiveSharePush()
   if (urgent) persistNow()
-  else if (!persistTimer) persistTimer = setTimeout(persistNow, PERSIST_MS)
+  else persistSoon()
+}
+
+function persistSoon() {
+  if (!persistTimer) persistTimer = setTimeout(persistNow, PERSIST_MS)
 }
 
 const LIVE_SHARE_PUSH_MS = 4000
@@ -383,8 +422,6 @@ function reset() {
   state.meetSelfId = null
   state.meetSelfName = null
   state.olderDrops = 0
-  state.selfSuppressed = []
-  state.selfVoiceAt = null
   state.voiceLanguages = {}
   state.languageSuggestion = null
   state.dismissedLanguages = {}
@@ -502,7 +539,7 @@ async function cancelRecording() {
   reset()
   state.background = background
   broadcast()
-  chrome.storage.local.remove('liveState').catch(() => {})
+  forgetPersisted()
   return { ok: true }
 }
 
@@ -660,7 +697,7 @@ async function discardUpload() {
   reset()
   state.background = null
   broadcast()
-  chrome.storage.local.remove('liveState').catch(() => {})
+  forgetPersisted()
   return { ok: true }
 }
 
@@ -677,30 +714,6 @@ function handleOffscreenEvent(message) {
     }
   } else if (message.type === 'languageProbe') {
     if (state.source !== 'meet' || state.status !== 'recording' || !probeLanguage(message.text, message.source)) return
-  } else if (message.type === 'lanePartial') {
-    if (state.source !== 'meet' || typeof message.text !== 'string') return
-    state.partial = message.text.slice(0, 2000)
-  } else if (message.type === 'laneFinal') {
-    if (state.source !== 'meet' || state.status !== 'recording') return
-    clearLiveError()
-    const local = message.participantId === 'local'
-    if (local && typeof message.text === 'string') {
-      state.selfVoiceAt = Date.now()
-      claimSelfVoice(state, message.text, message.startedAt)
-    }
-    const selfId = local && typeof state.meetSelfId === 'string' ? state.meetSelfId : null
-    if (!applyMeetEvent(state, {
-      event: 'laneFinal',
-      participantId: selfId ?? message.participantId,
-      name: local && !selfId ? selfName : undefined,
-      text: message.text,
-      startedAt: message.startedAt,
-      voice: local,
-    })) return
-    if (state.error && state.error === state.nativeError) {
-      state.error = null
-      state.nativeError = null
-    }
   } else if ((message.type === 'livePartial' || message.type === 'liveFinal') && captionsFlowing()) {
     clearLiveError()
     return
@@ -827,6 +840,9 @@ function applyMeetStats(raw) {
     language: typeof raw.language === 'string' ? raw.language.slice(0, 32) : '',
     meetLanguage: typeof raw.meetLanguage === 'string' ? raw.meetLanguage.slice(0, 32) : '',
     languageState: typeof raw.languageState === 'string' ? raw.languageState.slice(0, 32) : '',
+    confirmedLanguage: typeof raw.confirmedLanguage === 'string' ? raw.confirmedLanguage.slice(0, 32) : '',
+    captionLanguage: typeof raw.captionLanguage === 'string' ? raw.captionLanguage.slice(0, 32) : '',
+    captionPeer: typeof raw.captionPeer === 'string' ? raw.captionPeer.slice(0, 20) : '',
     mediaSessionId: raw.mediaSessionId === true,
     selfDevice: raw.selfDevice === true,
     error: typeof raw.error === 'string' ? raw.error.slice(0, 120) : '',
@@ -861,21 +877,6 @@ function probeLanguage(text, source) {
   state.voiceLanguages = { ...evidence, [origin]: recent }
   if (recent.length < VOICE_EVIDENCE || recent.some((code) => code !== result.code)) return false
   return offerLanguage(result.code, origin)
-}
-
-function selfVoiceHealthy(now = Date.now()) {
-  const errorAt = state.laneStats?.errorAt
-  if (errorAt && now - errorAt < SELF_VOICE_ERROR_MS) return false
-  return Boolean(state.meetStats?.localMic) || Boolean(state.selfVoiceAt && now - state.selfVoiceAt < SELF_VOICE_RECENT_MS)
-}
-
-function deepgramCoversSelf(utterance) {
-  if (!utterance || utterance.kind === 'chat') return false
-  const participantId = typeof utterance.participantId === 'string' ? utterance.participantId : utterance.deviceId
-  if (state.selfSuppressed?.includes(`${participantId}|${utterance.eventId}`)) return true
-  const selfId = state.meetSelfId
-  if (!selfId || participantId !== selfId) return false
-  return selfVoiceHealthy()
 }
 
 function captionsFlowing(now = Date.now()) {
@@ -913,7 +914,8 @@ function quietLiveAudio(now) {
 
 async function handleServiceMessage(message, sender) {
   if (message.type === 'meetNative') {
-    if (sender?.tab?.id !== state.tabId || sender.frameId !== 0 || state.source !== 'meet' || state.status !== 'recording' || state.paused || message.session !== state.sessionId) return { ok: false }
+    const pauseFlush = state.paused && message.event === 'utterances' && Number.isFinite(state.pausedAt) && Date.now() - state.pausedAt < PAUSE_FLUSH_MS
+    if (sender?.tab?.id !== state.tabId || sender.frameId !== 0 || state.source !== 'meet' || state.status !== 'recording' || (state.paused && !pauseFlush) || message.session !== state.sessionId) return { ok: false }
     if (message.event === 'error') {
       state.error = typeof message.message === 'string' ? message.message.slice(0, 300) : 'Data Meet belum tersedia.'
       state.nativeError = state.error
@@ -924,7 +926,6 @@ async function handleServiceMessage(message, sender) {
       if (!Array.isArray(message.utterances)) return { ok: false }
       let changed = false
       for (const utterance of message.utterances.slice(0, 200)) {
-        if (deepgramCoversSelf(utterance)) continue
         if (applyUtterance(state, utterance)) changed = true
       }
       if (changed) {
@@ -943,7 +944,14 @@ async function handleServiceMessage(message, sender) {
   }
   if (message.type === 'switchLanguage' || message.type === 'dismissLanguage') {
     if (sender?.tab || typeof message.code !== 'string' || !LANGUAGE_CODE.test(message.code)) return { ok: false }
-    if (state.source !== 'meet' || state.status !== 'recording') return { ok: false }
+    if (state.status !== 'recording') return { ok: false }
+    if (state.source !== 'meet') {
+      if (message.type !== 'switchLanguage') return { ok: false }
+      const reply = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'setLanguage', language: message.code }).catch(() => null)
+      if (reply?.ok) state.language = message.code
+      broadcast()
+      return { ok: Boolean(reply?.ok) }
+    }
     if (state.languageSuggestion?.code === message.code) state.languageSuggestion = null
     if (message.type === 'dismissLanguage') {
       state.dismissedLanguages = { ...(state.dismissedLanguages ?? {}), [message.code]: Date.now() }
@@ -960,11 +968,13 @@ async function handleServiceMessage(message, sender) {
   if (message.type === 'getState') return { ...state, linesSeq }
   if (message.type === 'speaker') {
     noteSpeaker(message.name ?? null)
+    persistSoon()
     return { ok: true }
   }
   if (message.type === 'roster') {
     const names = Array.isArray(message.names) ? message.names.filter((n) => typeof n === 'string').slice(0, 50) : []
     roster = names
+    persistSoon()
     const attendance = message.self ? [message.self, ...names] : names
     if (JSON.stringify(state.attendance) !== JSON.stringify(attendance)) {
       state.attendance = attendance
@@ -1001,7 +1011,7 @@ async function handleServiceMessage(message, sender) {
     if (state.status === 'interrupted') dropStoredRecovery()
     reset()
     broadcast()
-    chrome.storage.local.remove('liveState').catch(() => {})
+    forgetPersisted()
     return { ok: true }
   }
   return { ok: false, error: 'Perintah tidak dikenal' }

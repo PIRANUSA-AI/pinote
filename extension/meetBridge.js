@@ -3,8 +3,12 @@
   const DRAIN_MS = 1500
   const MAX_CHUNK_BYTES = 64000
   const MAX_UTTERANCES = 200
+  const RESEND_MS = 1000
+  const RESEND_LIMIT = 5
+  const PORT_RETRY_MS = 2000
   let session = null
   let port = null
+  let portAt = 0
   let draining = null
   let pendingStart = null
   let startTimer = null
@@ -33,17 +37,25 @@
     pendingStart = null
   }
 
-  function send(payload) {
+  function dispatch(message, retries) {
     if (!alive) return
     if (!contextAlive()) {
       shutdown()
       return
     }
+    const again = () => {
+      if (retries <= 0 || !alive || message.session !== session) return
+      setTimeout(() => dispatch(message, retries - 1), RESEND_MS)
+    }
     try {
-      chrome.runtime.sendMessage({ target: 'service', type: 'meetNative', session, ...payload }).catch(() => {})
+      chrome.runtime.sendMessage(message).then((reply) => { if (reply === undefined) again() }, again)
     } catch {
       shutdown()
     }
+  }
+
+  function send(payload, retries = 0) {
+    dispatch({ target: 'service', type: 'meetNative', session, ...payload }, retries)
   }
 
   function post(target, message) {
@@ -84,6 +96,7 @@
   }
 
   function openPort() {
+    portAt = Date.now()
     try {
       port = chrome.runtime.connect({ name: PORT_NAME })
     } catch {
@@ -114,14 +127,11 @@
   }
 
   function forwardAudio(target, data) {
-    if (!target || !Number.isSafeInteger(data.lane)) return
-    if (data.type === 'laneFlush') {
-      post(target, { type: 'laneFlush', lane: data.lane })
-      return
-    }
-    if (Object.prototype.toString.call(data.pcm) !== '[object ArrayBuffer]') return
-    if (data.pcm.byteLength === 0 || data.pcm.byteLength > MAX_CHUNK_BYTES) return
-    post(target, {
+    if (!target || !Number.isSafeInteger(data.lane)) return null
+    if (data.type === 'laneFlush') return post(target, { type: 'laneFlush', lane: data.lane })
+    if (Object.prototype.toString.call(data.pcm) !== '[object ArrayBuffer]') return null
+    if (data.pcm.byteLength === 0 || data.pcm.byteLength > MAX_CHUNK_BYTES) return null
+    return post(target, {
       type: 'lane',
       lane: data.lane,
       owner: typeof data.owner === 'string' ? data.owner.slice(0, 512) : null,
@@ -142,14 +152,27 @@
       return
     }
     const active = Boolean(session) && data.session === session
-    const drainingPort = draining && data.session === draining.session ? draining.port : null
-    if (!active && !drainingPort) return
+    const isDraining = Boolean(draining) && data.session === draining.session
+    if (!active && !isDraining) return
 
     if (data.type === 'lane' || data.type === 'laneFlush') {
-      forwardAudio(active ? port : drainingPort, data)
+      if (!active) {
+        forwardAudio(draining.port, data)
+        return
+      }
+      if (!port && Date.now() - portAt >= PORT_RETRY_MS) openPort()
+      if (forwardAudio(port, data) === false && alive && !port) {
+        openPort()
+        forwardAudio(port, data)
+      }
       return
     }
-    if (!active) return
+    if (!active) {
+      if (data.type === 'utterances' && Array.isArray(data.utterances)) {
+        dispatch({ target: 'service', type: 'meetNative', session: data.session, event: 'utterances', utterances: data.utterances.slice(0, MAX_UTTERANCES).map(utteranceFields).filter(Boolean) }, 0)
+      }
+      return
+    }
 
     if (data.type === 'ready') {
       const error = !data.captions
@@ -177,9 +200,9 @@
         devices: data.devices,
         message: data.message,
         stats: data.stats,
-      })
+      }, data.type === 'stats' ? 0 : RESEND_LIMIT)
     } else if (data.type === 'utterances' && Array.isArray(data.utterances)) {
-      send({ event: 'utterances', utterances: data.utterances.slice(0, MAX_UTTERANCES).map(utteranceFields).filter(Boolean) })
+      send({ event: 'utterances', utterances: data.utterances.slice(0, MAX_UTTERANCES).map(utteranceFields).filter(Boolean) }, RESEND_LIMIT)
     }
   })
 

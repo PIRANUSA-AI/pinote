@@ -63,10 +63,15 @@ export class QwenRealtimeSession {
     this.socket = socket
 
     socket.on('message', (raw) => this.handleUpstreamMessage(raw.toString()))
+    let rejected = false
     socket.on('unexpected-response', (_request, response) => {
+      rejected = true
       this.handlers.onError(`Qwen menolak koneksi (${response.statusCode ?? 0})`)
+      socket.terminate()
     })
-    socket.on('error', (err) => this.handlers.onError(err instanceof Error ? err.message : String(err)))
+    socket.on('error', (err) => {
+      if (!rejected) this.handlers.onError(err instanceof Error ? err.message : String(err))
+    })
     socket.on('close', () => {
       if (this.socket !== socket) return
       this.closed = true

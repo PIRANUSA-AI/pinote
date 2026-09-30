@@ -23,9 +23,9 @@ function parseLanguage(value: unknown): string {
   return value.length <= 32 && LANGUAGE_CODE.test(value) ? value : 'auto'
 }
 
-function openAiLanguage(language: string): 'id' | 'en' | 'auto' {
+function openAiLanguage(language: string): 'id' | 'en' | 'zh' | 'auto' {
   const primary = language.split('-')[0]?.toLowerCase()
-  return primary === 'id' || primary === 'en' ? primary : 'auto'
+  return primary === 'id' || primary === 'en' || primary === 'zh' ? primary : 'auto'
 }
 
 function createLiveSession(language: string, handlers: LiveTranscriptionHandlers, sampleRate: number, engine: string | null): LiveSession {
@@ -40,6 +40,7 @@ const BYTES_PER_SECOND = LIVE_SAMPLE_RATE * 2
 const MAX_SESSION_BYTES = BYTES_PER_SECOND * 60 * 60 * 4
 const MAX_SESSIONS_PER_USER = Number(process.env.LIVE_MAX_SESSIONS_PER_USER ?? 10)
 const MAX_TAG_LENGTH = 600
+const HEARTBEAT_MS = Number(process.env.LIVE_HEARTBEAT_MS ?? 25000)
 
 const activeSessions = new Map<string, number>()
 
@@ -88,9 +89,27 @@ function handleConnection(ws: WebSocket, user: User): void {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload))
   }
 
+  let alive = true
+  ws.on('pong', () => {
+    alive = true
+  })
+  const heartbeat = setInterval(() => {
+    if (!alive) {
+      ws.terminate()
+      return
+    }
+    alive = false
+    try {
+      ws.ping()
+    } catch {
+      ws.terminate()
+    }
+  }, HEARTBEAT_MS)
+
   const settle = () => {
     if (settled) return
     settled = true
+    clearInterval(heartbeat)
     session?.close()
     session = null
     releaseSlot(user.id)

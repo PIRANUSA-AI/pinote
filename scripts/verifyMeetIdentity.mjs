@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import { deflateSync } from 'node:zlib'
-import { applyMeetEvent, claimSelfVoice, nativeTranscript } from '../extension/meetTranscript.js'
+import { applyMeetEvent, applyUtterance, nativeTranscript } from '../extension/meetTranscript.js'
 import { nativeSegments, nativeTranscriptSchema } from '../backend/dist/lib/nativeTranscript.js'
 
 const context = vm.createContext({ Uint8Array, TextDecoder, TextEncoder, Blob, Response, DecompressionStream })
@@ -38,9 +38,10 @@ assert.equal(protocol.roster(await protocol.packet(new Uint8Array(0), true)).len
 await assert.rejects(() => protocol.packet(new Uint8Array(2 * 1024 * 1024 + 1)))
 await assert.rejects(() => protocol.packet(deflateSync(new Uint8Array(2 * 1024 * 1024 + 1)), true))
 
-const state = { lines: [], startedAt: Date.now() - 10000, pausedTotalMs: 0, meetParticipants: {} }
+const state = { lines: [], startedAt: Date.now() - 10000, pausedTotalMs: 0, meetParticipants: {}, source: 'meet' }
+const caption = (participantId, eventId, text) => applyUtterance(state, { source: 'meet', meetingId: 'abc-defg-hij', eventId: String(eventId), version: '1', participantId, text, timestamp: Date.now() - 2000 })
 for (let i = 0; i < 6; i++) {
-  assert.equal(applyMeetEvent(state, { event: 'laneFinal', participantId: `device-${i}`, text: `Kalimat milik ${i}`, startedAt: Date.now() - 2000 }), true)
+  assert.equal(caption(`device-${i}`, i + 1, `Kalimat milik ${i}`), true)
 }
 assert.equal(state.lines.length, 6)
 assert.ok(state.lines.every((l) => !l.identityResolved), 'Never infer absent names')
@@ -48,16 +49,16 @@ applyMeetEvent(state, { event: 'roster', users: protocol.roster(sync, true) })
 assert.ok(state.lines.every((l) => l.identityResolved), 'Late roster resolves by ID')
 assert.equal(state.lines[0].participantId, 'device-0')
 assert.equal(state.lines[1].participantId, 'device-1', 'Equal names do not merge identities')
-applyMeetEvent(state, { event: 'laneFinal', participantId: 'csrc:5001', text: 'Suara dari jalur', startedAt: Date.now() - 1000 })
+caption('csrc:5001', 7, 'Suara dari jalur')
 assert.equal(state.lines[6].identityResolved, false, 'Unmapped stream stays unknown')
 applyMeetEvent(state, { event: 'devices', devices })
 assert.equal(state.lines[6].participantId, 'device-3', 'Stream mapping resolves late')
 assert.equal(state.lines[6].speaker, 'Pembicara 3')
-applyMeetEvent(state, { event: 'laneFinal', participantId: 'local', name: 'Yoel Ganteng', text: 'Suara saya sendiri' })
+assert.equal(applyMeetEvent(state, { event: 'laneFinal', participantId: 'local', name: 'Yoel Ganteng', text: 'Suara saya sendiri' }), false, 'Microphone audio never writes Meet lines, like the reference')
+assert.equal(state.lines.length, 7)
 applyMeetEvent(state, { event: 'roster', users: [{ id: 'device-0', name: 'Yoel Baru' }] })
 assert.equal(state.lines[0].speaker, 'Yoel Baru')
 assert.equal(state.lines[1].speaker, 'Yoel')
-assert.equal(state.lines[7].speaker, 'Yoel Ganteng', 'Local microphone keeps the account name')
 assert.equal(applyMeetEvent(state, { event: 'laneFinal', participantId: '', text: 'Tanpa id' }), false)
 assert.equal(applyMeetEvent(state, { event: 'laneFinal', participantId: 'device-1', text: '   ' }), false)
 assert.ok(state.lines.every((l) => l.startSec <= l.endSec))
@@ -65,7 +66,7 @@ const native = nativeTranscript(state)
 assert.equal(nativeTranscriptSchema.safeParse(native).success, true)
 assert.equal(nativeTranscriptSchema.safeParse([{ ...native[0], end: -1 }]).success, false)
 const segments = nativeSegments(native)
-assert.equal(segments.length, 8)
+assert.equal(segments.length, 7)
 assert.ok(segments.every((s) => s.provenance === 'meet-native' && s.participantId))
 const twins = nativeSegments([{ ...native[0], name: 'Nama sama' }, { ...native[1], name: 'Nama sama' }])
 assert.notEqual(twins[0].speaker, twins[1].speaker)
@@ -159,7 +160,7 @@ page.RekapinMeetProtocol = protocol
 vm.runInContext(readFileSync(new URL('../extension/languageDetect.js', import.meta.url), 'utf8'), page)
 vm.runInContext(readFileSync(new URL('../extension/meetPage.js', import.meta.url), 'utf8'), page)
 const tick = () => new Promise((resolve) => setTimeout(resolve, 20))
-const flush = () => intervals.filter((i) => i.ms === 500).at(-1).fn()
+const flush = () => intervals.filter((i) => i.ms === 150).at(-1).fn()
 const utterances = (session) => messages.filter((m) => m.type === 'utterances' && m.session === session).flatMap((m) => m.utterances)
 
 const peer = new page.RTCPeerConnection()
@@ -355,15 +356,14 @@ const lanes = () => allLanes().filter((m) => m.owner === 'local')
 const probes = () => allLanes().filter((m) => m.owner === 'probe')
 for (let i = 0; i < 3; i++) micTrack.reader.push(frame(0.2))
 await tick()
-assert.equal(lanes().length, 3, 'Your microphone as sent by Meet streams to Deepgram')
-assert.ok(lanes().every((m) => m.language === 'en-US' && m.engine === undefined && m.pcm.byteLength === 4800), 'Deepgram hears your voice in the active caption language')
+assert.equal(lanes().length, 0, 'Your microphone is never transcribed separately, your words come from your own Meet captions like the reference')
 assert.equal(probes().length, 3, 'The start of your sentence is also sampled for language identification')
 assert.ok(probes().every((m) => m.engine === 'qwen' && m.language === 'auto' && m.lane === 9001), 'Only the identifier sample goes to Qwen')
 assert.equal(latestStats().localMic, true)
 for (const id of [40, 41, 42]) say(id, 'device-0', `kalimat saya sendiri nomor ${id} yang cukup panjang`)
 await tick()
 const selfRoster = messages.filter((m) => m.type === 'roster' && m.session === 'session-2').at(-1)
-assert.equal(selfRoster.selfId, 'device-0', 'The device whose captions match your own voice is recognised as you')
+assert.notEqual(selfRoster?.selfId, 'device-0', 'Talking while your microphone is loud never makes another device you')
 control('switchLanguage', 'session-2', 'ja-JP')
 assert.equal(commands().at(-1), 'ja-JP', 'A chosen language switches Meet captions for everyone')
 control('switchLanguage', 'session-2', 'ko-KR')
@@ -372,8 +372,7 @@ micTrack.enabled = false
 intervals.filter((i) => i.ms === 250).at(-1).fn()
 for (let i = 0; i < 2; i++) micTrack.reader.push(frame(0.2))
 await tick()
-assert.equal(lanes().length, 3, 'Muting in Meet stops your Deepgram audio immediately')
-assert.ok(messages.some((m) => m.type === 'laneFlush' && m.session === 'session-2'), 'The sentence before muting is finished')
+assert.equal(lanes().length, 0, 'Muting in Meet sends no audio either')
 assert.equal(latestStats().localMic, false)
 control('stop', 'session-2')
 peerSenders = []
@@ -442,7 +441,7 @@ assert.equal(controls.length, beforeDead, 'After shutdown the bridge stays silen
 
 const noopEvent = { addListener() {} }
 const service = vm.createContext({
-  applyMeetEvent, claimSelfVoice, nativeTranscript, Date, URL, crypto: globalThis.crypto, setTimeout, clearTimeout,
+  applyMeetEvent, applyUtterance, nativeTranscript, Date, URL, crypto: globalThis.crypto, setTimeout, clearTimeout,
   chrome: {
     sidePanel: { setPanelBehavior: async () => {} },
     storage: { local: { remove: async () => {}, get: async () => ({}), set: async () => {} }, onChanged: noopEvent },
@@ -462,16 +461,12 @@ service.injected = { type: 'meetNative', session: 'native-test', event: 'laneFin
 await vm.runInContext('handleServiceMessage(injected, { tab: { id: 42 }, frameId: 0 })', service)
 assert.equal(vm.runInContext('state.lines.length', service), 0, 'The page cannot write transcript lines')
 vm.runInContext("handleOffscreenEvent({ type: 'laneFinal', participantId: 'device-3', text: 'Dari jalur audio', startedAt: Date.now() - 1500 })", service)
-assert.equal(vm.runInContext('state.lines.length', service), 1)
-assert.equal(vm.runInContext('state.lines[0].speaker', service), 'Pembicara 3')
 vm.runInContext("handleOffscreenEvent({ type: 'laneFinal', participantId: 'local', text: 'Dari jalur keluar Meet' })", service)
-assert.equal(vm.runInContext('state.lines[1].participantId', service), 'local')
-assert.equal(vm.runInContext('state.lines[1].identityResolved', service), true)
-assert.equal(vm.runInContext('state.lines[1].speaker', service), vm.runInContext('selfName', service))
+assert.equal(vm.runInContext('state.lines.length', service), 0, 'Audio lanes never become transcript lines, only Meet captions do')
 assert.equal((await vm.runInContext("handleServiceMessage({ type: 'speaker', name: 'Wrong' }, { tab: { id: 42 } })", service)).ok, false)
 vm.runInContext('state.paused = true', service)
 assert.equal((await vm.runInContext('handleServiceMessage(rosterMessage, { tab: { id: 42 }, frameId: 0 })', service)).ok, false)
 vm.runInContext("state.paused = false; state.status = 'uploading'", service)
 vm.runInContext("handleOffscreenEvent({ type: 'laneFinal', participantId: 'device-3', text: 'Terlambat' })", service)
-assert.equal(vm.runInContext('state.lines.length', service), 2, 'Lines never arrive outside recording')
+assert.equal(vm.runInContext('state.lines.length', service), 0, 'Lines never arrive outside recording')
 console.log('PASS: Meet caption channels for every participant, caption acks, language command, revisions, stream to account mapping, late identity, duplicate names, bridge draining, upload schema, and service boundaries (synthetic fixtures).')

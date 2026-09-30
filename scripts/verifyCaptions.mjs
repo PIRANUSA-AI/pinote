@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
-import { applyMeetEvent, applyUtterance, claimSelfVoice, nativeTranscript } from '../extension/meetTranscript.js'
+import { applyMeetEvent, applyUtterance, nativeTranscript } from '../extension/meetTranscript.js'
 import { combineLines } from '../extension/transcriptBlocks.js'
 
 const trackerContext = vm.createContext({})
@@ -62,7 +62,7 @@ assert.equal(scrollOverlap('satu dua', 'dua tiga'), 0, 'Short overlaps are not t
 
 const noopEvent = { addListener() {} }
 const service = vm.createContext({
-  applyMeetEvent, applyUtterance, claimSelfVoice, nativeTranscript, Date, URL, crypto: globalThis.crypto, setTimeout, clearTimeout,
+  applyMeetEvent, applyUtterance, nativeTranscript, Date, URL, crypto: globalThis.crypto, setTimeout, clearTimeout,
   chrome: {
     tabs: { sendMessage: async () => {} },
     sidePanel: { setPanelBehavior: async () => {} },

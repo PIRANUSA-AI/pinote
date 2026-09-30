@@ -1,5 +1,5 @@
 import { readConfig } from './config.js'
-import { combineLines } from './transcriptBlocks.js'
+import { combineLines, updateBlocks } from './transcriptBlocks.js'
 import { formatTalk, talkTime } from './talkTime.js'
 import { actionSentences, findActions } from './actionItems.js'
 import { markdownFilename, transcriptMarkdown } from './transcriptMarkdown.js'
@@ -9,7 +9,19 @@ const LANGUAGE_NAMES = {
   'id-ID': 'Indonesia', 'en-US': 'Inggris', 'es-ES': 'Spanyol', 'pt-BR': 'Portugis', 'fr-FR': 'Prancis', 'de-DE': 'Jerman',
   'it-IT': 'Italia', 'nl-NL': 'Belanda', 'vi-VN': 'Vietnam', 'ja-JP': 'Jepang', 'cmn-Hans-CN': 'Mandarin', 'ko-KR': 'Korea',
   'th-TH': 'Thai', 'ar-EG': 'Arab', 'ru-RU': 'Rusia', 'hi-IN': 'Hindi', 'he-IL': 'Ibrani', 'el-GR': 'Yunani',
+  'cmn-Hant-TW': 'Mandarin Tradisional', 'en-GB': 'Inggris', 'en-AU': 'Inggris', 'en-IN': 'Inggris', 'es-MX': 'Spanyol',
+  id: 'Indonesia', en: 'Inggris', zh: 'Mandarin', auto: 'otomatis',
 }
+const LANGUAGE_WAITING = {
+  menunggu: (name) => `Meet belum mengganti bahasa ke ${name}, mencoba lagi.`,
+  timeout: (name) => `Meet belum menjawab perintah bahasa ${name}, mencoba lagi.`,
+  ditolak: (name) => `Meet menolak bahasa ${name}. Pilih bahasa lain atau ganti lewat pengaturan teks di Meet.`,
+  unavailable: (name) => `Bahasa ${name} belum tersedia untuk teks Meet di rapat ini.`,
+  gagal: (name) => `Meet tetap belum mengganti bahasa ke ${name}. Ganti bahasa teks langsung di Meet, lalu Rekapin mengikutinya.`,
+  gagal: (name) => `Meet tidak mau mengganti bahasa ke ${name}. Ganti lewat pengaturan teks di Meet, lalu Rekapin ikut.`,
+}
+const LANGUAGE_SETTLED = new Set(['', 'ok', 'diganti di Meet'])
+const PANEL_UI_KEY = 'panelUi'
 let config = null
 let activeTab = null
 let loggedIn = false
@@ -30,6 +42,13 @@ let actionsOpen = false
 let actionKey = ''
 let actionItems = []
 let currentEntries = []
+let linesDirtyFrom = 0
+let renderedStartedAt = null
+let restoredUi = null
+let pendingScrollTop = null
+let pendingExportOpen = false
+let uiSaveTimer = null
+let booted = false
 
 function show(node, visible) {
   node.hidden = !visible
@@ -225,6 +244,8 @@ function buildLine(entry, startedAt, continued = false) {
   row.dataset.speaker = entry.speaker ?? ''
   row.dataset.text = entry.text
   row.dataset.continued = continued ? '1' : ''
+  row.dataset.at = String(entry.at ?? '')
+  row.dataset.chat = entry.chat ? '1' : ''
   if (actionSentences(entry.text).length > 0) row.classList.add('hasAction')
 
   const header = document.createElement('div')
@@ -364,36 +385,58 @@ function setSearchOpen(open) {
     applySearch()
     scrollToLatest()
   }
+  savePanelUi()
+}
+
+function rowMatches(row, entry, continued) {
+  return row.dataset.text === entry.text
+    && row.dataset.speaker === (entry.speaker ?? '')
+    && Boolean(row.dataset.continued) === continued
+    && row.dataset.at === String(entry.at ?? '')
+    && Boolean(row.dataset.chat) === Boolean(entry.chat)
 }
 
 function renderTranscript(state) {
   const lines = el('liveLines')
-  const entries = combineLines(state.lines ?? [])
-
-  if (entries.length < renderedCount) {
-    lines.textContent = ''
-    renderedCount = 0
-    partialNode = null
+  let firstChanged = currentEntries.length
+  if (linesDirtyFrom !== Infinity) {
+    const result = updateBlocks(currentEntries, state.lines ?? [], linesDirtyFrom)
+    currentEntries = result.blocks
+    firstChanged = result.firstChanged
+    linesDirtyFrom = Infinity
   }
+  const entries = currentEntries
 
   if (partialNode) {
     partialNode.remove()
     partialNode = null
   }
 
-  for (let i = 0; i < Math.min(renderedCount, entries.length); i++) {
+  if (renderedStartedAt !== (state.startedAt ?? null)) {
+    lines.textContent = ''
+    renderedCount = 0
+    firstChanged = 0
+    renderedStartedAt = state.startedAt ?? null
+  }
+
+  while (renderedCount > entries.length && lines.lastElementChild) {
+    lines.lastElementChild.remove()
+    renderedCount -= 1
+  }
+
+  for (let i = Math.max(0, firstChanged); i < Math.min(renderedCount, entries.length); i++) {
     const rendered = lines.children[i]
     const entry = entries[i]
     const continued = continues(entries, i)
-    if (rendered && entry && (rendered.dataset.text !== entry.text
-      || rendered.dataset.speaker !== (entry.speaker ?? '')
-      || Boolean(rendered.dataset.continued) !== continued)) {
+    if (rendered && !rowMatches(rendered, entry, continued)) {
       lines.replaceChild(buildLine(entry, state.startedAt, continued), rendered)
     }
   }
 
-  for (let i = renderedCount; i < entries.length; i++) {
-    lines.appendChild(buildLine(entries[i], state.startedAt, continues(entries, i)))
+  if (renderedCount < entries.length) {
+    const fresh = document.createDocumentFragment()
+    for (let i = renderedCount; i < entries.length; i++) fresh.appendChild(buildLine(entries[i], state.startedAt, continues(entries, i)))
+    lines.appendChild(fresh)
   }
   renderedCount = entries.length
 
@@ -408,17 +451,19 @@ function renderTranscript(state) {
   show(lines, hasContent)
   show(el('emptyState'), !hasContent)
   el('lineCount').textContent = entries.length > 0 ? `${entries.length} baris` : ''
-  currentEntries = entries
   show(el('exportWrap'), entries.length > 0)
   if (entries.length === 0) closeExportMenu()
+  else if (pendingExportOpen) setExportMenu(true, false)
+  pendingExportOpen = false
   renderActions(entries, state.startedAt)
 
-  if (searchQuery) {
-    applySearch()
-    return
+  if (searchQuery) applySearch()
+  else if (stickToBottom) scrollToLatest()
+  if (pendingScrollTop !== null && hasContent && lines.clientHeight > 0) {
+    lines.scrollTop = pendingScrollTop
+    pendingScrollTop = null
+    show(el('jumpLatest'), !stickToBottom)
   }
-
-  if (stickToBottom) scrollToLatest()
 }
 
 function renderActions(entries, startedAt) {
@@ -466,9 +511,15 @@ function jumpToLine(index) {
   row.classList.add('flash')
 }
 
+function setExportMenu(open, save = true) {
+  const changed = el('exportMenu').hidden === open
+  show(el('exportMenu'), open)
+  el('exportToggle').setAttribute('aria-expanded', String(open))
+  if (changed && save) savePanelUi()
+}
+
 function closeExportMenu() {
-  show(el('exportMenu'), false)
-  el('exportToggle').setAttribute('aria-expanded', 'false')
+  setExportMenu(false)
 }
 
 function exportMarkdown() {
@@ -514,6 +565,16 @@ function bgUploadText(bg) {
 }
 
 let talkKey = ''
+let talkSource = null
+let talkValue = []
+
+function panelTalkTime(lines) {
+  if (talkSource !== lines) {
+    talkSource = lines
+    talkValue = talkTime(lines)
+  }
+  return talkValue
+}
 
 function renderTalkTime(items) {
   const row = el('talkRow')
@@ -568,6 +629,23 @@ function setFocusMode(value, moveFocus = true) {
   if (moveFocus) el(value ? 'focusExpand' : 'focusToggle').focus()
 }
 
+function languageName(code) {
+  return LANGUAGE_NAMES[code] ?? code
+}
+
+function meetLanguageStatus(stats) {
+  const desired = typeof stats?.language === 'string' ? stats.language : ''
+  if (!desired) return null
+  const phase = typeof stats.languageState === 'string' ? stats.languageState : ''
+  const reported = [stats.confirmedLanguage, stats.captionLanguage].find((code) => typeof code === 'string' && code) ?? ''
+  const settled = LANGUAGE_SETTLED.has(phase) && (!reported || reported === desired)
+  const mode = stats.autoLanguage ? ' · otomatis' : ''
+  if (settled) return { text: `Bahasa transkrip: ${languageName(reported || desired)}${mode}`, warn: false }
+  const waiting = LANGUAGE_WAITING[phase] ?? ((name) => `Meet belum mengganti bahasa ke ${name}, mencoba lagi.`)
+  const current = reported && reported !== desired ? ` Teks Meet saat ini masih ${languageName(reported)}.` : ''
+  return { text: `${waiting(languageName(desired))}${current}`, warn: true }
+}
+
 function renderControls(state) {
   const recording = state.status === 'recording' || state.status === 'starting'
   const uploading = state.status === 'uploading'
@@ -593,20 +671,21 @@ function renderControls(state) {
   show(el('watcherHint'), recording && onMeet && !state.watcherOn)
   if (attendance.length > 0) el('attendanceRow').textContent = `Hadir: ${attendance.join(', ')}`
   show(el('attendanceRow'), recording && attendance.length > 0)
-  renderTalkTime(recording ? talkTime(state.lines) : [])
+  renderTalkTime(recording ? panelTalkTime(state.lines) : [])
   const sharing = Boolean(state.liveShare?.url)
   show(el('shareRow'), recording && state.source !== 'whatsapp')
   show(el('shareStart'), !sharing)
   show(el('shareActive'), sharing)
-  const active = onMeet ? state.meetStats?.language : ''
-  if (active) {
-    const name = LANGUAGE_NAMES[active] ?? active
-    const mode = state.meetStats.autoLanguage ? ' · otomatis' : ''
-    el('languageRow').textContent = `Bahasa transkrip: ${name}${mode}`
-  }
+  const meetLanguage = onMeet ? meetLanguageStatus(state.meetStats) : null
   const autoElsewhere = !onMeet && state.language === 'auto'
-  if (autoElsewhere) el('languageRow').textContent = 'Bahasa transkrip langsung: Indonesia. Untuk rapat berbahasa Inggris, pilih English sebelum mulai.'
-  show(el('languageRow'), recording && (Boolean(active) || autoElsewhere))
+  if (meetLanguage) {
+    el('languageRow').textContent = meetLanguage.text
+    el('languageRow').className = meetLanguage.warn ? 'startHint warn' : 'startHint'
+  } else if (autoElsewhere) {
+    el('languageRow').textContent = 'Bahasa transkrip langsung: Indonesia. Untuk rapat berbahasa Inggris atau Mandarin, pilih English atau 中文 sebelum mulai.'
+    el('languageRow').className = 'startHint'
+  }
+  show(el('languageRow'), recording && (Boolean(meetLanguage) || autoElsewhere))
   const offer = recording && onMeet ? state.languageSuggestion : null
   if (offer) {
     const name = LANGUAGE_NAMES[offer.code] ?? offer.code
@@ -691,8 +770,74 @@ function secondsUntil(timestamp) {
   return Math.max(0, Math.ceil((timestamp - Date.now()) / 1000))
 }
 
+function panelSessionKey(state) {
+  if (state?.sessionId) return `session:${state.sessionId}`
+  if (state?.startedAt) return `started:${state.startedAt}`
+  return ''
+}
+
+function writePanelUi() {
+  clearTimeout(uiSaveTimer)
+  uiSaveTimer = null
+  if (!booted || restoredUi) return
+  const value = {
+    session: panelSessionKey(latestState),
+    scrollTop: Math.round(el('liveLines').scrollTop),
+    stickToBottom,
+    actionsOpen,
+    exportOpen: !el('exportMenu').hidden,
+    cancelOpen: !el('cancelModal').hidden,
+    searchOpen: !el('headSearch').hidden,
+    searchQuery,
+    notice,
+  }
+  try {
+    chrome.storage.session.set({ [PANEL_UI_KEY]: value }).catch(() => {})
+  } catch {
+    return
+  }
+}
+
+function savePanelUi() {
+  if (uiSaveTimer) return
+  uiSaveTimer = setTimeout(writePanelUi, 250)
+}
+
+async function loadPanelUi() {
+  try {
+    const stored = await chrome.storage.session.get(PANEL_UI_KEY)
+    const value = stored?.[PANEL_UI_KEY]
+    return value && typeof value === 'object' ? value : null
+  } catch {
+    return null
+  }
+}
+
+function restorePanelUi(state) {
+  const saved = restoredUi
+  restoredUi = null
+  if (typeof saved.notice === 'string') notice = saved.notice.slice(0, 300)
+  if (!saved.session || saved.session !== panelSessionKey(state)) return
+  actionsOpen = saved.actionsOpen === true
+  if (saved.searchOpen === true) {
+    searchQuery = typeof saved.searchQuery === 'string' ? saved.searchQuery.slice(0, 200) : ''
+    el('searchInput').value = searchQuery
+    activeMatch = searchQuery ? 0 : -1
+    show(el('headDefault'), false)
+    show(el('headSearch'), true)
+  }
+  stickToBottom = saved.stickToBottom !== false
+  pendingScrollTop = stickToBottom || !Number.isFinite(saved.scrollTop) ? null : Math.max(0, saved.scrollTop)
+  pendingExportOpen = saved.exportOpen === true
+  if (saved.cancelOpen === true && (state.status === 'recording' || state.status === 'starting')) {
+    show(el('cancelModal'), true)
+    el('cancelKeep').focus()
+  }
+}
+
 function applyState(state) {
   latestState = state
+  if (restoredUi) restorePanelUi(state)
   renderControls(state)
   renderTranscript(state)
 }
@@ -700,37 +845,74 @@ function applyState(state) {
 let panelLines = []
 let panelLinesSeq = -1
 let pulling = false
+let pullAgain = false
+let queuedStates = []
+const QUEUED_STATES_LIMIT = 200
+
+function drainQueuedStates() {
+  const waiting = queuedStates
+  queuedStates = []
+  for (const queued of waiting) {
+    if (!queued.lines || !Number.isInteger(queued.lines.seq) || queued.lines.seq <= panelLinesSeq) continue
+    if (applyLinesDelta(queued.lines)) {
+      applyState({ ...queued.state, lines: panelLines })
+      continue
+    }
+    pullAgain = true
+    return
+  }
+}
 
 async function pullState() {
+  if (pulling) {
+    pullAgain = true
+    return
+  }
   pulling = true
   try {
-    const state = await chrome.runtime.sendMessage({ target: 'service', type: 'getState' })
-    if (!state) return
-    panelLines = Array.isArray(state.lines) ? state.lines : []
-    panelLinesSeq = Number.isInteger(state.linesSeq) ? state.linesSeq : -1
-    applyState(state)
+    do {
+      pullAgain = false
+      const state = await chrome.runtime.sendMessage({ target: 'service', type: 'getState' }).catch(() => null)
+      if (state) {
+        panelLines = Array.isArray(state.lines) ? state.lines : []
+        panelLinesSeq = Number.isInteger(state.linesSeq) ? state.linesSeq : -1
+        linesDirtyFrom = 0
+        applyState(state)
+      }
+      drainQueuedStates()
+    } while (pullAgain)
   } finally {
     pulling = false
   }
 }
 
 function applyLinesDelta(delta) {
-  if (!delta || delta.seq !== panelLinesSeq + 1 || delta.from > panelLines.length) return false
-  panelLines = panelLines.slice(0, delta.from).concat(delta.tail)
+  if (!delta || panelLinesSeq < 0 || delta.seq !== panelLinesSeq + 1 || !Array.isArray(delta.tail) || delta.from > panelLines.length) return false
+  const next = delta.tail.length === 0 && delta.from === panelLines.length ? panelLines : panelLines.slice(0, delta.from).concat(delta.tail)
+  if (next.length !== delta.total) return false
+  if (next !== panelLines) linesDirtyFrom = Math.min(linesDirtyFrom, delta.from)
+  panelLines = next
   panelLinesSeq = delta.seq
-  return panelLines.length === delta.total
+  return true
 }
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.target !== 'panel') return undefined
-  if (message.type === 'state') {
-    if (applyLinesDelta(message.lines)) applyState({ ...message.state, lines: panelLines })
-    else if (!pulling) void pullState()
+  if (message.type === 'state' && booted) {
+    if (pulling) {
+      queuedStates.push(message)
+      if (queuedStates.length > QUEUED_STATES_LIMIT) {
+        queuedStates = []
+        pullAgain = true
+      }
+    } else if (applyLinesDelta(message.lines)) applyState({ ...message.state, lines: panelLines })
+    else void pullState()
   }
   if (message.type === 'micPermission') {
     notice = message.granted
       ? 'Mikrofon siap. Tekan Mulai Rekapin.'
       : 'Mikrofon ditolak. Rekapin tetap jalan, tapi hanya suara peserta lain yang tertangkap.'
+    savePanelUi()
     if (latestState) renderControls(latestState)
   }
   return undefined
@@ -738,23 +920,29 @@ chrome.runtime.onMessage.addListener((message) => {
 
 el('liveLines').addEventListener('scroll', () => {
   const lines = el('liveLines')
+  if (lines.hidden) return
   const distance = lines.scrollHeight - lines.scrollTop - lines.clientHeight
+  const wasStuck = stickToBottom
   stickToBottom = distance < 48
   show(el('jumpLatest'), !stickToBottom)
+  if (!stickToBottom || wasStuck !== stickToBottom) savePanelUi()
 })
 
-el('jumpLatest').addEventListener('click', scrollToLatest)
+el('jumpLatest').addEventListener('click', () => {
+  scrollToLatest()
+  savePanelUi()
+})
 
 el('actionToggle').addEventListener('click', () => {
   actionsOpen = !actionsOpen
   renderActions(currentEntries, latestState?.startedAt)
+  savePanelUi()
 })
 
 el('exportToggle').addEventListener('click', (event) => {
   event.stopPropagation()
   const open = el('exportMenu').hidden
-  show(el('exportMenu'), open)
-  el('exportToggle').setAttribute('aria-expanded', String(open))
+  setExportMenu(open)
   if (open) el('exportCopy').focus()
 })
 
@@ -827,6 +1015,7 @@ el('searchInput').addEventListener('input', (event) => {
   activeMatch = searchQuery ? 0 : -1
   applySearch()
   if (matches.length > 0) focusMatch(true)
+  savePanelUi()
 })
 
 el('searchInput').addEventListener('keydown', (event) => {
@@ -848,11 +1037,14 @@ function cancellable() {
 function openCancelModal() {
   show(el('cancelModal'), true)
   el('cancelKeep').focus()
+  savePanelUi()
 }
 
 function closeCancelModal() {
+  const wasOpen = !el('cancelModal').hidden
   show(el('cancelModal'), false)
   el('cancelConfirm').disabled = false
+  if (wasOpen) savePanelUi()
 }
 
 el('cancelButton').addEventListener('click', () => {
@@ -1030,12 +1222,14 @@ el('recordButton').addEventListener('click', async () => {
 
   if ((await micPermissionState()) === 'prompt') {
     notice = 'Izinkan mikrofon di tab yang baru terbuka, lalu tekan Mulai Rekapin lagi.'
+    savePanelUi()
     if (latestState) renderControls(latestState)
     await chrome.tabs.create({ url: chrome.runtime.getURL(`micPermission.html?returnTab=${activeTab.id}`) })
     return
   }
 
   notice = ''
+  savePanelUi()
   el('recordButton').disabled = true
   await chrome.runtime.sendMessage({
     target: 'service',
@@ -1085,11 +1279,15 @@ async function init() {
   config = await readConfig()
   await restoreLanguage()
   await restorePreferences()
+  restoredUi = await loadPanelUi()
   await loadTab()
   void checkForUpdate()
+  booted = true
+  await pullState()
   await syncAuth()
-  if (loggedIn) await pullState()
-  else scheduleAuth(authDelay)
+  if (!loggedIn) scheduleAuth(authDelay)
+  else if (!latestState) await pullState()
+  else renderTranscript(latestState)
 
   clockTimer = setInterval(() => {
     if (!latestState) return
@@ -1102,7 +1300,16 @@ async function init() {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) restartAuthPolling()
+  if (document.hidden) {
+    if (uiSaveTimer) writePanelUi()
+    return
+  }
+  restartAuthPolling()
+  if (booted && loggedIn) void pullState()
+})
+
+window.addEventListener('pagehide', () => {
+  if (uiSaveTimer) writePanelUi()
 })
 
 window.addEventListener('unload', () => {

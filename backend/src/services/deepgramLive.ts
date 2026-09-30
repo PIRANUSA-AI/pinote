@@ -7,6 +7,8 @@ const KEEPALIVE_MS = Number(process.env.DEEPGRAM_KEEPALIVE_MS ?? 5000)
 const ENDPOINTING_MS = Number(process.env.DEEPGRAM_ENDPOINTING_MS ?? 300)
 const UTTERANCE_END_MS = Number(process.env.DEEPGRAM_UTTERANCE_END_MS ?? 1000)
 const MAX_PENDING = 400
+const HANDSHAKE_TIMEOUT_MS = 15000
+const AUTO_LANGUAGE = process.env.DEEPGRAM_LIVE_AUTO_LANGUAGE ?? 'id'
 
 const FOREIGN_SCRIPT = /[Ѐ-ӿ؀-ۿ฀-๿぀-ヿ一-鿿가-힯]/g
 
@@ -16,10 +18,16 @@ const SPECIAL_CODES: Record<string, string> = { 'cmn-Hans-CN': 'zh-CN', 'cmn-Han
 export type LiveLanguage = string
 
 export function deepgramLanguage(language: LiveLanguage): string {
-  if (language === 'auto') return 'multi'
+  if (language === 'auto') return AUTO_LANGUAGE
   if (Object.hasOwn(SPECIAL_CODES, language)) return SPECIAL_CODES[language]!
   const [primary, region] = language.split('-')
-  if (!primary) return 'multi'
+  if (!primary) return AUTO_LANGUAGE
+  if (primary.toLowerCase() === 'zh') {
+    const variant = language.split('-').slice(1).map((part) => part.toUpperCase())
+    if (variant.includes('TW') || variant.includes('HANT')) return 'zh-TW'
+    if (variant.includes('HK')) return 'zh-HK'
+    return 'zh-CN'
+  }
   if (primary === 'en' || primary === 'pt' || primary === 'es' || primary === 'fr' || primary === 'de' || primary === 'nl') {
     return region && /^[A-Z]{2}$/.test(region) ? `${primary}-${region}` : primary
   }
@@ -94,6 +102,7 @@ export class DeepgramLiveSession {
 
     const socket = new WebSocket(`${DEEPGRAM_LIVE_URL}?${params.toString()}`, {
       headers: { Authorization: `Token ${key}` },
+      handshakeTimeout: HANDSHAKE_TIMEOUT_MS,
     })
     this.socket = socket
 
@@ -105,8 +114,11 @@ export class DeepgramLiveSession {
       this.handlers.onReady()
     })
 
+    let rejected = false
     socket.on('unexpected-response', (_request, response) => {
+      rejected = true
       this.handlers.onError(`Deepgram menolak koneksi (${response.statusCode ?? 0})`)
+      socket.terminate()
     })
 
     socket.on('message', (raw, isBinary) => {
@@ -114,6 +126,7 @@ export class DeepgramLiveSession {
     })
 
     socket.on('error', (err) => {
+      if (rejected) return
       this.handlers.onError(err instanceof Error ? err.message : String(err))
     })
 
