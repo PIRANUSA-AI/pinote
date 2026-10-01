@@ -143,14 +143,14 @@ flowchart LR
 > **Penjelasan diagram.** Diagram di atas memetakan deployment same-origin lewat nginx di `pinote.contrivent.com`, yang merupakan setup paling lengkap di repo (lihat `nginx/pinote.contrivent.com.conf` dan `ecosystem.config.json`). nginx menyajikan file statik frontend, mem-proxy `/api/` ke API di port 3000, dan punya logika deteksi bot untuk path `/share/`. Bot crawler diarahkan ke backend agar dapat HTML server-render dengan tag Open Graph, sedangkan browser biasa dapat fallback SPA.
 
 > [!WARNING]
-> Dokumentasi di repo tidak konsisten soal hosting. README menyebut frontend di Vercel; ada `netlify.toml`; ada config nginx; dan `fly.toml` mendefinisikan app bernama `pinote-contrivent` di region Singapura (`sin`). Config nginx plus PM2 adalah setup yang paling utuh dan paling mungkin dipakai produksi. Kalau kamu mengubah routing, ingat bahwa logika `/share/:token` untuk bot ada di nginx, bukan di Netlify ataupun Vercel.
+> Kalau kamu mengubah routing, ingat bahwa logika `/share/:token` untuk bot ada di nginx, bukan di Netlify ataupun Vercel.
 
-**Fly.io** mengelola dua process group dari satu image Docker:
+**VPS + PM2** menjalankan dua proses dari satu codebase:
 
-- `app` menjalankan `node dist/index.js`, mendapat traffic HTTP, dengan health check `GET /health`.
+- `app` menjalankan `node dist/index.js`, mendapat traffic HTTP lewat nginx reverse proxy, dengan health check `GET /health`.
 - `worker` menjalankan `node dist/worker.js`, tidak menerima HTTP, polling database.
 
-Sebelum tiap deploy, Fly menjalankan `release_command = "node dist/db/migrate.js && node dist/db/seed.js"`. Artinya kode database yang disentuh migrasi dan seed harus ikut ter-compile ke `dist/`.
+Sebelum tiap deploy, jalankan `node dist/db/migrate.js && node dist/db/seed.js`. Artinya kode database yang disentuh migrasi dan seed harus ikut ter-compile ke `dist/`.
 
 ---
 
@@ -213,7 +213,7 @@ flowchart TB
 ### 5.2 Entry point worker (`src/worker.ts`)
 
 - Refuses to boot kecuali `STORAGE_PROVIDER=s3`. Tanpa itu, worker throw dan proses mati.
-- `workerId` diambil dari `FLY_MACHINE_ID` plus PID; interval polling `WORKER_POLL_MS` (default 5000ms).
+- `workerId` diambil dari `HOSTNAME` plus PID; interval polling `WORKER_POLL_MS` (default 5000ms).
 - Saat startup: mengembalikan job `transcribing` yang punya `storageKey` menjadi `queued` (pesan *"Worker restart; job re-queued."*).
 - Loop utama tiap tick: tulis heartbeat worker (TTL 90s), jalankan `recoverStuckTranscribingJobs()` (di-throttle sekali per 60s; job `transcribing` dengan `startedAt` lebih dari 3 jam dianggap timeout, ditandai `failed` plus refund kredit), lalu klaim satu job `queued` dan proses.
 
@@ -666,7 +666,7 @@ Hanya variable yang **benar-benar dibaca kode** yang didokumentasikan di sini. B
 | `DEFAULT_ADMIN_USERNAME`, `DEFAULT_ADMIN_PASSWORD` | `yoel`, `123` | Seeding admin; wajib minimal 8 karakter di staging dan produksi |
 | `ALLOW_PUBLIC_SIGNUP` | | Flag status signup (endpoint signup tetap 403) |
 | `SIGNUP_CREDIT_SECONDS` | 600 | Kredit welcome user baru |
-| `FLY_MACHINE_ID` | | Sumber workerId di Fly |
+| `HOSTNAME` | | Sumber workerId di VPS |
 
 ### Frontend (hanya `VITE_*` yang terekspos)
 
@@ -685,10 +685,9 @@ Hanya variable yang **benar-benar dibaca kode** yang didokumentasikan di sini. B
 
 Beberapa ketidakcocokan antara dokumentasi yang ada dan kode. Yang berlaku adalah kode.
 
-1. **Hosting ambigu.** README bilang Vercel; ada `netlify.toml`; ada config nginx plus `ecosystem.config.json`; dan `fly.toml` punya app `pinote-contrivent`. Setup nginx same-origin adalah yang paling utuh dan paling mungkin produksi.
+1. **Hosting.** Produksi pakai VPS dengan nginx reverse proxy dan PM2. Config ada di `nginx/pinote.contrivent.com.conf` dan `ecosystem.config.json`.
 2. **Provider storage ambigu.** `.env.example` menulis contoh Cloudflare R2 dengan path style true, sedangkan `AGENTS.md` menulis Supabase Storage dengan path style false. Kode provider-agnostic, jadi dua-duanya bisa jalan; yang benar tergantung deployment.
-3. **Nama app Fly** di `fly.toml` (`pinote-contrivent`) berbeda dengan contoh deploy di README (`taskit-contrivent`).
-4. **Auth.** Login password dan signup publik sudah 403. Yang aktif hanya Google Sign-In dengan allowlist domain. Jangan mengasumsikan ada login password.
+3. **Auth.** Login password dan signup publik sudah 403. Yang aktif hanya Google Sign-In dengan allowlist domain. Jangan mengasumsikan ada login password.
 5. **Status job.** Termasuk status awal `pending` yang tidak disebut `AGENTS.md` di baris lifecycle-nya.
 6. **Routing `/share/:token`** untuk bot ditangani nginx, bukan rewrite Netlify ataupun Vercel.
 7. **`speaker-service/`** hanya berisi virtualenv Python tanpa source maupun wiring ke kode. Kemungkinan eksperimen speaker identification yang sudah tidak aktif. Jangan menganggapnya bagian dari runtime.

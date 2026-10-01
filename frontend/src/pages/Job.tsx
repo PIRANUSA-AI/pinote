@@ -173,6 +173,8 @@ export default function Job() {
   if (!job) return <LoadingScreen />
 
   const isRunning = job.status === 'uploading' || job.status === 'queued' || job.status === 'transcribing' || job.status === 'pending'
+  const isOwner = initial?.isOwner !== false
+  const memberIds = initial?.memberIds ?? []
 
   return (
     <div className={`mx-auto w-full max-w-7xl px-4 lg:px-8 pb-[calc(5.5rem+env(safe-area-inset-bottom))] md:pb-12 ${audioPlaying ? 'pt-16' : 'pt-6'}`}>
@@ -213,8 +215,14 @@ export default function Job() {
                 Privat: hanya kamu yang bisa melihat, tugas masuk ke daftarmu sendiri
               </p>
             )}
+            {!isOwner && (
+              <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700">
+                <ShareNetwork size={12} weight="bold" />
+                Dibagikan oleh {initial?.ownerName ?? 'anggota tim'}
+              </p>
+            )}
           </div>
-          <div className="flex items-center gap-1 flex-shrink-0">
+          <div className={`flex items-center gap-1 flex-shrink-0 ${isOwner ? '' : 'hidden'}`}>
             {!job.isPrivate && (
               <button
                 onClick={() => setShareOpen(true)}
@@ -261,8 +269,8 @@ export default function Job() {
                   filename={job.filename}
                   jobId={job.id}
                   speakerNames={job.speakerNames}
-                  onActionItemsChange={updateActionItems}
-                  onSpeakerRename={renameSpeaker}
+                  onActionItemsChange={isOwner ? updateActionItems : undefined}
+                  onSpeakerRename={isOwner ? renameSpeaker : undefined}
                   audioCurrentTime={audioTime}
                 />
               </div>
@@ -273,8 +281,10 @@ export default function Job() {
                     jobId={job.id}
                     actionItems={job.actionItems}
                     speakerNames={job.speakerNames}
+                    readOnly={!isOwner}
+                    canShare={isOwner && !job.isPrivate}
                     onChange={updateActionItems}
-                    onSpeakerRename={renameSpeaker}
+                    onSpeakerRename={isOwner ? renameSpeaker : undefined}
                   />
                 </div>
               </div>
@@ -401,6 +411,8 @@ export default function Job() {
           initialInternal={job.shareToken}
           initialStakeholder={job.shareTokenMom}
           onTokensChange={handleTokensChange}
+          memberIds={memberIds}
+          onMembersChange={(ids) => setInitial((cur) => (cur ? { ...cur, memberIds: ids } : cur))}
         />
       )}
     </div>

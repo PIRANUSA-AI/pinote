@@ -113,12 +113,13 @@ export function HistoryList({ refreshKey, limit, emptyAction = true }: Props) {
                   job.durationSec ? formatDuration(job.durationSec) : null,
                   job.sizeBytes ? formatBytes(job.sizeBytes) : null,
                   job.speakerCount && job.speakerCount > 0 ? `${job.speakerCount} pembicara` : null,
+                  job.isOwner === false ? `Dibagikan oleh ${job.ownerName ?? 'anggota tim'}` : null,
                 ]
                   .filter(Boolean)
                   .join(' | ')}
               </p>
             </div>
-            <button
+            {job.isOwner !== false && <button
               onClick={(e) => handleDelete(e, job)}
               disabled={deletingId === job.id}
               className="grid place-items-center w-9 h-9 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 disabled:opacity-40"
@@ -129,7 +130,7 @@ export function HistoryList({ refreshKey, limit, emptyAction = true }: Props) {
               }
             >
               <Trash size={16} />
-            </button>
+            </button>}
             <ArrowRight size={16} className="text-slate-400 flex-shrink-0" />
           </Link>
         </motion.li>

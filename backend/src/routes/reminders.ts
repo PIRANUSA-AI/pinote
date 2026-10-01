@@ -1,10 +1,10 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, sql, desc } from 'drizzle-orm'
+import { eq, and, sql, asc, desc } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import OpenAI from 'openai'
 import { db } from '../db/client.js'
-import { actionItems, reminders, users } from '../db/schema.js'
+import { actionItemMembers, actionItems, reminders, users } from '../db/schema.js'
 import { requireAdmin, requireAuth, type AppEnv } from '../middleware/auth.js'
 
 const GLM_BASE_URL = process.env.GLM_BASE_URL ?? 'https://api.z.ai/api/paas/v4'
@@ -37,6 +37,7 @@ async function resolveAssignee(taskId: string): Promise<{ userId: string | null;
   const [item] = await db
     .select({
       id: actionItems.id,
+      jobId: actionItems.jobId,
       owner: actionItems.owner,
       assigneeId: actionItems.assigneeId,
     })
@@ -48,6 +49,15 @@ async function resolveAssignee(taskId: string): Promise<{ userId: string | null;
   if (item.assigneeId) {
     return { userId: item.assigneeId, owner: item.owner }
   }
+
+  const [member] = await db
+    .select({ userId: actionItemMembers.userId })
+    .from(actionItemMembers)
+    .where(eq(actionItemMembers.itemId, taskId))
+    .orderBy(asc(actionItemMembers.createdAt))
+    .limit(1)
+  if (member) return { userId: member.userId, owner: item.owner }
+  if (item.jobId) return { userId: null, owner: item.owner }
 
   const matchName = item.owner.trim().toLowerCase()
   const [user] = await db

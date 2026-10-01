@@ -195,20 +195,14 @@ Worker membutuhkan `STORAGE_PROVIDER=s3`. Jika S3/Supabase Storage belum dikonfi
 
 ## Penerapan
 
-Backend berjalan di Fly.io dengan dua process group:
+Backend berjalan di VPS dengan PM2 (dua proses):
 
-- `app`: API server.
-- `worker`: pemroses job transkripsi.
+- `app`: API server (`node dist/index.js`).
+- `worker`: pemroses job transkripsi (`node dist/worker.js`).
 
-Deploy dari folder `backend`:
+Sebelum deploy, jalankan migrasi dan seed:
 
 ```bash
-fly deploy --config fly.toml --app taskit-contrivent
-```
-
-Release command akan menjalankan migrasi dan seed:
-
-```text
 node dist/db/migrate.js && node dist/db/seed.js
 ```
 

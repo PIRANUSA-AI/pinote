@@ -15,7 +15,7 @@ setGlobalDispatcher(new Agent({
 }))
 
 const pollMs = Number(process.env.WORKER_POLL_MS ?? 5000)
-const workerId = `${process.env.FLY_MACHINE_ID ?? 'local'}-${process.pid}`
+const workerId = `${process.env.HOSTNAME ?? 'local'}-${process.pid}`
 
 async function claimQueuedJob(): Promise<string | null> {
   const [candidate] = await db

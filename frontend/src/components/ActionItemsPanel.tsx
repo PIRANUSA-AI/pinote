@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Check,
@@ -6,9 +6,11 @@ import {
   PencilSimple,
   Plus,
   Trash,
+  UserPlus,
   WarningCircle,
   X,
 } from '@phosphor-icons/react'
+import { PeoplePicker, loadPeople, personName } from './PeoplePicker'
 import type { ActionItem, ActionItemChange } from '../lib/api'
 import { api } from '../lib/api'
 import { speakerStyle } from '../lib/format'
@@ -20,6 +22,7 @@ interface Props {
   actionItems: ActionItem[]
   speakerNames: Record<string, string>
   readOnly?: boolean
+  canShare?: boolean
   onChange?: (next: ActionItem[]) => void
   onSpeakerRename?: (speaker: string, name: string) => void
 }
@@ -31,9 +34,27 @@ export function ActionItemsPanel({
   actionItems,
   speakerNames,
   readOnly,
+  canShare,
   onChange,
   onSpeakerRename,
 }: Props) {
+  const [sharingItem, setSharingItem] = useState<ActionItem | null>(null)
+  const [peopleById, setPeopleById] = useState<Map<string, string>>(new Map())
+
+  useEffect(() => {
+    if (!canShare) return
+    loadPeople()
+      .then((people) => setPeopleById(new Map(people.map((p) => [p.id, personName(p)]))))
+      .catch(() => {})
+  }, [canShare])
+
+  const saveShare = async (item: ActionItem, ids: string[]) => {
+    const res = await api.put<{ itemId: string; sharedWith: string[] }>(
+      `/jobs/${jobId}/action-items/${item.id}/members`,
+      { userIds: ids }
+    )
+    onChange?.(actionItems.map((it) => (it.id === res.itemId ? { ...it, sharedWith: res.sharedWith } : it)))
+  }
   const [copiedOwner, setCopiedOwner] = useState<string | null>(null)
   const [copiedAll, setCopiedAll] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -279,6 +300,16 @@ export function ActionItemsPanel({
                                 {item.task}
                               </span>
                               <DueBadge due={item.due} dueOn={item.dueOn} done={item.done} />
+                              {(item.sharedWith?.length ?? 0) > 0 && (
+                                <span
+                                  className="inline-flex items-center gap-1 text-[10px] text-indigo-700 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded"
+                                  title={(item.sharedWith ?? []).map((id) => peopleById.get(id) ?? id).join(', ')}
+                                >
+                                  <UserPlus size={10} weight="bold" />
+                                  {(item.sharedWith ?? []).map((id) => peopleById.get(id)).filter(Boolean).slice(0, 2).join(', ') || `${item.sharedWith?.length} orang`}
+                                  {(item.sharedWith?.length ?? 0) > 2 && ` +${(item.sharedWith?.length ?? 0) - 2}`}
+                                </span>
+                              )}
                               {lowConf && (
                                 <span className="inline-flex items-center gap-1 text-[10px] text-amber-700 bg-amber-100 border border-amber-200 px-1.5 py-0.5 rounded">
                                   <WarningCircle size={10} weight="fill" />
@@ -291,6 +322,15 @@ export function ActionItemsPanel({
 
                         {!readOnly && (
                           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                            {canShare && (
+                              <button
+                                onClick={() => setSharingItem(item)}
+                                className="grid place-items-center w-7 h-7 rounded-lg text-slate-400 hover:text-navy hover:bg-slate-100"
+                                title="Bagikan tugas"
+                              >
+                                <UserPlus size={13} />
+                              </button>
+                            )}
                             <button
                               onClick={() => {
                                 setEditingId(item.id)
@@ -356,6 +396,17 @@ export function ActionItemsPanel({
           <X size={11} />
           Item berlabel "Perlu ditinjau" diekstrak AI dengan keyakinan rendah — verifikasi sebelum diambil tindakan.
         </p>
+      )}
+
+      {canShare && (
+        <PeoplePicker
+          open={sharingItem !== null}
+          title="Bagikan tugas"
+          subtitle={sharingItem?.task}
+          initial={sharingItem?.sharedWith ?? []}
+          onSave={(ids) => (sharingItem ? saveShare(sharingItem, ids) : Promise.resolve())}
+          onClose={() => setSharingItem(null)}
+        />
       )}
     </div>
   )

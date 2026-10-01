@@ -192,6 +192,42 @@ export const actionItems = pgTable(
   })
 )
 
+export const jobMembers = pgTable(
+  'job_members',
+  {
+    jobId: text('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    addedBy: text('added_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pairIdx: uniqueIndex('job_members_pair_idx').on(t.jobId, t.userId),
+    userIdx: index('job_members_user_idx').on(t.userId),
+  })
+)
+
+export const actionItemMembers = pgTable(
+  'action_item_members',
+  {
+    itemId: text('item_id')
+      .notNull()
+      .references(() => actionItems.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    addedBy: text('added_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pairIdx: uniqueIndex('action_item_members_pair_idx').on(t.itemId, t.userId),
+    userIdx: index('action_item_members_user_idx').on(t.userId),
+  })
+)
+
 export const reminders = pgTable(
   'reminders',
   {

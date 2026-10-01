@@ -5,7 +5,7 @@ High-signal context for AI agents working in this repo (Pinote by Contrivent —
 ## Toolchain truth (don't get fooled)
 
 - Root `package.json` scripts are thin wrappers using `npm --prefix backend` / `npm --prefix frontend`. **Use npm, not pnpm**, even though a stale `pnpm-lock.yaml` sits at the root. Each app has its own `package-lock.json`.
-- Two deployable processes live in the **same** `backend` package, with separate entry points: API = `src/index.ts`, worker = `src/worker.ts`. Both run as Fly.io process groups (`app`, `worker`).
+- Two deployable processes live in the **same** `backend` package, with separate entry points: API = `src/index.ts`, worker = `src/worker.ts`. Both run as PM2 processes (`app`, `worker`) on a VPS.
 - There is **no test runner, lint, or formatter configured**. Don't invent `npm test` / `npm run lint`. Verification = `npm --prefix backend run build` (= `tsc`) and `npm --prefix frontend run build` (= `tsc -b && vite build`). Typecheck by building.
 - Backend is ESM (`"type": "module"`). TS source **must use explicit `.js` import specifiers** (e.g. `./routes/auth.js`) because `moduleResolution: Bundler` + runtime ESM. Match this style in any new file.
 
@@ -34,7 +34,7 @@ npm --prefix backend run db:seed        # tsx src/db/seed.ts
 npm --prefix backend run db:studio      # drizzle-kit studio
 ```
 
-On Fly, deploy runs `release_command = "node dist/db/migrate.js && node dist/db/seed.js"` — so any DB code touched by migrations/seed must compile into `dist/` (it does via `rootDir: src`).
+Before deploy, run `node dist/db/migrate.js && node dist/db/seed.js` — so any DB code touched by migrations/seed must compile into `dist/` (it does via `rootDir: src`).
 
 ## Architecture gotchas
 
@@ -43,7 +43,7 @@ On Fly, deploy runs `release_command = "node dist/db/migrate.js && node dist/db/
 - Job lifecycle is DB-driven, not queue-driven: statuses `uploading -> queued -> transcribing -> completed|failed|cancelled`. Worker claims via `UPDATE ... WHERE status='queued'` (no message broker). `index.ts` reclaims `uploading` jobs on API restart; `worker.ts` re-queues `transcribing` jobs with a `storageKey` on worker restart.
 - Credits are reserved upfront using client-sent `durationSec`, then reconciled by the worker against Deepgram's real duration. Cancel = soft cancel + refund. See `services/transcription.ts`.
 - Public share: `/share/:token` is rendered by the **backend as HTML** (server-side, for crawlers/AI). The frontend SPA must NOT swallow this path — `vercel.json` rewrites `/share/:token` to the backend before the SPA fallback. Keep that rewrite if touching routing.
-- `/health` is the Fly check; it reports `degraded` (503) if db/cache/storage/worker-heartbeat fail. `/health/live` is liveness-only (always 200). The health field is `cache` (not `redis`).
+- `/health` is the readiness check; it reports `degraded` (503) if db/cache/storage/worker-heartbeat fail. `/health/live` is liveness-only (always 200). The health field is `cache` (not `redis`).
 
 ## Env (common mistakes)
 
@@ -57,4 +57,4 @@ On Fly, deploy runs `release_command = "node dist/db/migrate.js && node dist/db/
 
 - Backend code keeps Bahasa Indonesia strings in user-facing error messages (e.g. upload failure messages in `index.ts`). Preserve that when editing user-visible strings.
 - All schema changes start in `backend/src/db/schema.ts`, then `db:generate` to emit SQL into `src/db/migrations/`. Don't hand-edit generated migration SQL for normal changes.
-- Frontend is mobile-first + PWA; `vite-plugin-pwa` config in `vite.config.ts` hardcodes an old API origin (`audio-to-text-api.fly.dev`) in the runtime cache rule — note if touching API hosting.
+- Frontend is mobile-first + PWA; `vite-plugin-pwa` config in `vite.config.ts` may hardcode an old API origin in the runtime cache rule — note if touching API hosting.

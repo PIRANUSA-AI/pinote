@@ -113,6 +113,13 @@
       "when": 1790234520411,
       "tag": "0015_gifted_tarot",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1790820731749,
+      "tag": "0016_ordinary_namor",
+      "breakpoints": true
     }
   ]
 }

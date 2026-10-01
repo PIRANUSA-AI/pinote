@@ -75,6 +75,14 @@ export interface JobSummary {
   speakerCount: number | null
   source?: string
   isPrivate?: boolean
+  isOwner?: boolean
+  ownerName?: string | null
+}
+
+export interface Person {
+  id: string
+  username: string
+  displayName: string | null
 }
 
 export interface TranscriptSegment {
@@ -102,6 +110,7 @@ export interface ActionItem {
   confidence: number
   done: boolean
   order: number
+  sharedWith?: string[]
 }
 
 export interface ActionItemChange {
@@ -136,6 +145,9 @@ export interface JobDetail {
   cancelledAt?: string | null
   shareToken?: string | null
   shareTokenMom?: string | null
+  isOwner?: boolean
+  ownerName?: string | null
+  memberIds?: string[]
 }
 
 export type ShareKind = 'internal' | 'stakeholder'

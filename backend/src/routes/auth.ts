@@ -16,6 +16,7 @@ import { verifyGoogleToken } from '../services/firebase.js'
 import { requireAuth, type AppEnv } from '../middleware/auth.js'
 import { db } from '../db/client.js'
 import { actionItems, jobs, users } from '../db/schema.js'
+import { findTaskFor, taskVisibleTo } from '../lib/taskAccess.js'
 import { cacheUserStats, getCachedUserStats, cacheIncrWithTtl, cacheDelete, cacheGet } from '../services/cache.js'
 import { nanoid } from 'nanoid'
 import { parseDue } from '../lib/dueDate.js'
@@ -189,7 +190,7 @@ authRouter.get('/me/tasks', requireAuth, async (c) => {
       .where(
         and(
           or(sql`${actionItems.jobId} IS NULL`, eq(jobs.status, 'completed')),
-          or(eq(actionItems.assigneeId, user.id), sql`LOWER(${actionItems.owner}) = ${matchName}`)
+          taskVisibleTo(user.id, matchName)
         )
       )
       .orderBy(desc(sql`COALESCE(${jobs.createdAt}, ${actionItems.createdAt})`), asc(actionItems.order), asc(actionItems.createdAt))
@@ -270,16 +271,8 @@ authRouter.patch('/me/tasks', requireAuth, async (c) => {
 
   const matchName = (user.displayName ?? user.username).trim().toLowerCase()
 
-  const [item] = await db
-    .select({ id: actionItems.id, assigneeId: actionItems.assigneeId, owner: actionItems.owner })
-    .from(actionItems)
-    .where(eq(actionItems.id, parsed.data.itemId))
-    .limit(1)
-  if (!item) return c.json({ error: 'Tugas tidak ditemukan' }, 404)
-
-  const owned =
-    item.assigneeId === user.id || (item.owner ?? '').trim().toLowerCase() === matchName
-  if (!owned) return c.json({ error: 'Tugas ini bukan milik kamu' }, 403)
+  const item = await findTaskFor(parsed.data.itemId, user.id, matchName)
+  if (!item) return c.json({ error: 'Tugas tidak ditemukan atau bukan milik kamu' }, 404)
 
   const patch: Record<string, unknown> = {}
   if (parsed.data.done !== undefined) patch.done = parsed.data.done
@@ -288,8 +281,8 @@ authRouter.patch('/me/tasks', requireAuth, async (c) => {
     patch.due = parsed.data.due
     patch.dueOn = parseDue(parsed.data.due, new Date())
   }
-  if (item.assigneeId === null) patch.assigneeId = user.id
   if (Object.keys(patch).length === 0) return c.json({ ok: true, unchanged: true })
+  if (item.assigneeId === null && item.owner.trim().toLowerCase() === matchName) patch.assigneeId = user.id
 
   await db.update(actionItems).set(patch).where(eq(actionItems.id, parsed.data.itemId))
   return c.json({ ok: true })

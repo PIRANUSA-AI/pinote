@@ -47,6 +47,33 @@ function sameArray(a, b) {
   return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, index) => value === b[index])
 }
 
+function presentName(name) {
+  return typeof name === 'string' && name.trim() && !name.includes('@') ? name.trim() : null
+}
+
+function spokenName(state, line) {
+  if (line.provenance !== 'meet-native' || !line.identityResolved) return null
+  const participants = state.meetParticipants ?? {}
+  const person = Object.hasOwn(participants, line.participantId) ? participants[line.participantId] : null
+  if (!line.fixedName && person?.status === 'placeholder') return null
+  return presentName(line.speaker)
+}
+
+function refreshAttendance(state) {
+  const joined = Object.values(state.meetParticipants ?? {}).filter((p) => p.status === '1').map((p) => presentName(p.name))
+  const spoke = (state.lines ?? []).map((line) => spokenName(state, line))
+  const attendance = [...new Set([...joined, ...spoke].filter(Boolean))].slice(0, 50)
+  if (sameArray(attendance, state.attendance)) return false
+  state.attendance = attendance
+  return true
+}
+
+function noteSpeaker(state, line) {
+  const name = spokenName(state, line)
+  if (!name || (state.attendance ?? []).includes(name) || (state.attendance ?? []).length >= 50) return
+  state.attendance = [...(state.attendance ?? []), name]
+}
+
 export function applyMeetEvent(state, message) {
   if (message.event === 'roster') {
     if (!Array.isArray(message.users)) return false
@@ -78,9 +105,7 @@ export function applyMeetEvent(state, message) {
       rosterChanged = true
     }
     const linesChanged = resolveAffected(state, affected)
-    const attendance = [...new Set(Object.values(participants).filter((p) => p.status === '1' || !p.status).map((p) => p.name))].slice(0, 50)
-    const attendanceChanged = !sameArray(attendance, state.attendance)
-    if (attendanceChanged) state.attendance = attendance
+    const attendanceChanged = refreshAttendance(state)
     return rosterChanged || linesChanged || attendanceChanged
   }
 
@@ -139,7 +164,7 @@ export function applyUtterance(state, event) {
   const at = Number.isFinite(event.timestamp) ? Math.min(event.timestamp, now) : now
   const offset = (value) => Math.max(0, (value - state.startedAt - (state.pausedTotalMs ?? 0)) / 1000)
   const key = `${chat ? 'chat|' : ''}${participantId}|${event.eventId}`
-  const speakerName = typeof event.speakerName === 'string' ? event.speakerName.trim().slice(0, 120) : ''
+  const speakerName = presentName(typeof event.speakerName === 'string' ? event.speakerName.slice(0, 120) : '') ?? ''
   const language = typeof event.language === 'string' ? event.language.slice(0, 32) : ''
   state.utteranceMeeting ??= event.meetingId
 
@@ -163,6 +188,7 @@ export function applyUtterance(state, event) {
       line.speaker = speakerName
       line.identityResolved = true
     } else resolveLine(state, line)
+    noteSpeaker(state, line)
     return true
   }
 
@@ -195,6 +221,7 @@ export function applyUtterance(state, event) {
   } else resolveLine(state, fresh)
   state.lines.push(fresh)
   index.set(key, fresh)
+  noteSpeaker(state, fresh)
   return true
 }
 

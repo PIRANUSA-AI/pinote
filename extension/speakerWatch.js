@@ -27,7 +27,7 @@ let enableTried = false
 
 function cleanName(text) {
   const name = (text ?? '').replace(/\s+/g, ' ').trim().replace(/\s*\((you|anda|kamu)\)$/i, '')
-  if (!name || name.length > 60) return null
+  if (!name || name.length > 60 || name.includes('@')) return null
   if (SELF_LABELS.includes(name.toLowerCase())) return null
   if (!/[a-zA-ZÀ-ɏ一-鿿]/.test(name)) return null
   return name

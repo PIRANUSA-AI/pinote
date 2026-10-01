@@ -78,8 +78,8 @@
     return maps.flatMap((map) => repeated(map, 2, (u) => {
       const id = str(u, 1)
       const parent = str(u, 21)
-      const user = { id, name: str(u, 2) || str(u, 29), parentId: parent && parent !== id && parent.length <= 512 ? parent : '', self: Boolean(str(u, 7)), status: num(u, 4) }
-      return user.id && user.id.length <= 512 && user.name && user.name.length <= 120 ? user : null
+      const user = { id, name: str(u, 2).trim(), parentId: parent && parent !== id && parent.length <= 512 ? parent : '', self: Boolean(str(u, 7)), status: num(u, 4) }
+      return user.id && user.id.length <= 512 && user.name && user.name.length <= 120 && !user.name.includes('@') ? user : null
     }))
   }
   function roster(bytes, sync = false) {

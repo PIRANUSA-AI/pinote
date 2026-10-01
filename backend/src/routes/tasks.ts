@@ -5,6 +5,7 @@ import { db } from '../db/client.js'
 import { actionItems, jobs, users } from '../db/schema.js'
 import type { AppEnv } from '../middleware/auth.js'
 import { parseDue } from '../lib/dueDate.js'
+import { findTaskFor, taskVisibleTo } from '../lib/taskAccess.js'
 
 export const tasksRouter = new Hono<AppEnv>()
 
@@ -52,10 +53,7 @@ tasksRouter.get('/:token', async (c) => {
       and(
         or(sql`${actionItems.jobId} IS NULL`, eq(jobs.status, 'completed')),
         or(sql`${actionItems.jobId} IS NULL`, eq(jobs.isPrivate, false)),
-        or(
-          eq(actionItems.assigneeId, user.id),
-          sql`LOWER(${actionItems.owner}) = ${matchName}`
-        )
+        taskVisibleTo(user.id, matchName)
       )
     )
     .orderBy(desc(sql`COALESCE(${jobs.createdAt}, ${actionItems.createdAt})`), asc(actionItems.order), asc(actionItems.createdAt))
@@ -121,17 +119,8 @@ tasksRouter.patch('/:token/item/:itemId', async (c) => {
 
   const matchName = user.matchName
 
-  // Make sure this item actually belongs to the token holder before mutating.
-  const [item] = await db
-    .select({ id: actionItems.id, assigneeId: actionItems.assigneeId, owner: actionItems.owner })
-    .from(actionItems)
-    .where(eq(actionItems.id, itemId))
-    .limit(1)
-  if (!item) return c.json({ error: 'Tugas tidak ditemukan' }, 404)
-
-  const owned =
-    item.assigneeId === user.id || (item.owner ?? '').trim().toLowerCase() === matchName
-  if (!owned) return c.json({ error: 'Tugas ini bukan milik kamu' }, 403)
+  const item = await findTaskFor(itemId, user.id, matchName)
+  if (!item) return c.json({ error: 'Tugas tidak ditemukan atau bukan milik kamu' }, 404)
 
   const patch: Record<string, unknown> = {}
   if (parsed.data.done !== undefined) patch.done = parsed.data.done
@@ -144,7 +133,7 @@ tasksRouter.patch('/:token/item/:itemId', async (c) => {
 
   // Pin assigneeId the first time the holder interacts with a name-matched item,
   // so future renames don't break ownership.
-  if (item.assigneeId === null) patch.assigneeId = user.id
+  if (item.assigneeId === null && item.owner.trim().toLowerCase() === matchName) patch.assigneeId = user.id
 
   await db.update(actionItems).set(patch).where(eq(actionItems.id, itemId))
   return c.json({ ok: true })
@@ -155,6 +144,9 @@ tasksRouter.post('/:token/item/:itemId/claim', async (c) => {
   const itemId = c.req.param('itemId')
   const user = await findUserByToken(token)
   if (!user) return c.json({ error: 'Link tugas tidak ditemukan' }, 404)
+
+  const item = await findTaskFor(itemId, user.id, user.matchName)
+  if (!item) return c.json({ error: 'Tugas tidak ditemukan atau bukan milik kamu' }, 404)
 
   await db.update(actionItems).set({ assigneeId: user.id }).where(eq(actionItems.id, itemId))
   return c.json({ ok: true })

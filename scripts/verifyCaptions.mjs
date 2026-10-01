@@ -113,6 +113,14 @@ assert.equal((await send({ event: 'utterances', utterances: [utterance('9', '1',
 assert.equal(run('state.lines.length'), 3, 'Only caption participant ids are accepted from caption pages')
 assert.equal((await send({ event: 'roster', users: [{ id: 'spaces/x', name: 'Palsu' }] })).ok, true)
 assert.ok(!JSON.stringify(run('state.attendance')).includes('Palsu'))
+
+const invited = { lines: [], attendance: [] }
+applyMeetEvent(invited, { event: 'roster', users: [
+  { id: 'spaces/a/devices/1', name: 'Hadir Beneran', status: '1' },
+  { id: 'spaces/a/devices/2', name: 'Cuma Diundang' },
+  { id: 'spaces/a/devices/3', name: 'tamu@contoh.com', status: '1' },
+] })
+assert.equal(JSON.stringify(invited.attendance), '["Hadir Beneran"]', 'Invitees without a joined status and email names are not attendees')
 run("state.source = 'meet'")
 assert.equal((await send({ event: 'utterances', utterances: [utterance('9', '1', 'meet')] })).ok, false, 'Meet sessions do not take page captions')
 run("state.source = 'zoom'; state.paused = true")

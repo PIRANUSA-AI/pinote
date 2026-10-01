@@ -25,6 +25,15 @@ const PROGRESS_BY_STEP: Record<string, number> = {
 const transcribeFromUrl: typeof transcribeWithDeepgram = (args) =>
   hasDeepgramKey() ? transcribeWithDeepgram(args) : transcribeWithQwen(args)
 
+function meetingParticipants(job: typeof jobs.$inferSelect): string[] {
+  const names = [
+    ...(job.attendance ?? []),
+    ...Object.values(job.speakerNames ?? {}),
+    ...(job.nativeTranscript ?? []).map((line) => line.name ?? ''),
+  ]
+  return [...new Set(names.map((n) => n.trim()).filter((n) => n && !n.includes('@')))]
+}
+
 function stepProgress(step: string): number {
   const exact = PROGRESS_BY_STEP[step]
   if (exact) return exact
@@ -167,7 +176,7 @@ async function generateJobInsights(jobId: string): Promise<void> {
   try {
     console.log(`[${jobId}] Background: Generating summary (attempt ${job.insightAttempts})...`)
     await cacheJobStatus(jobId, { status: 'completed', progress: 75 })
-    const insights = await generateInsights(segments)
+    const insights = await generateInsights(segments, meetingParticipants(job))
 
     const updatedSpeakers = new Set(segments.map((s) => s.speaker))
 
@@ -219,11 +228,18 @@ async function generateJobInsights(jobId: string): Promise<void> {
     }
 
     if (insights.actionItems.length > 0 && !job.isPrivate) {
+      const [uploader] = await db
+        .select({ displayName: users.displayName, username: users.username })
+        .from(users)
+        .where(eq(users.id, job.userId))
+        .limit(1)
+      const uploaderKeys = new Set([uploader?.displayName, uploader?.username].filter((n): n is string => !!n).map((n) => n.trim().toLowerCase()))
       await db.insert(actionItems).values(
         insights.actionItems.map((it, i) => ({
           id: nanoid(),
           jobId,
           owner: it.owner,
+          assigneeId: uploaderKeys.has(it.owner.trim().toLowerCase()) ? job.userId : null,
           task: it.task,
           due: it.due ?? null,
           dueOn: parseDue(it.due, meetingAt),
@@ -234,10 +250,6 @@ async function generateJobInsights(jobId: string): Promise<void> {
     }
 
     await db.update(jobs).set({ insightStatus: 'done' }).where(eq(jobs.id, jobId))
-
-    if (insights.actionItems.length > 0 && !job.isPrivate) {
-      await sendDigests(job, insights.actionItems, insights.title)
-    }
 
     if (segments.length > 0 && job.nativeTranscript === null) {
       console.log(`[${jobId}] Background: Refining transcript...`)

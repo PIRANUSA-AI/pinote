@@ -2,6 +2,7 @@ import { and, desc, eq, gt, isNotNull, or, sql } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { actionItems, jobs, users } from '../db/schema.js'
 import { cacheIncrWithTtl } from './cache.js'
+import { taskVisibleTo } from '../lib/taskAccess.js'
 import { fallbackMeetingTitle, renderWeeklyDigest, sendEmail, type WeeklyTask } from './email.js'
 
 const JAKARTA_OFFSET_MS = 7 * 60 * 60 * 1000
@@ -47,7 +48,7 @@ export async function maybeSendWeeklyDigests(now = new Date()): Promise<void> {
         .where(and(
           eq(actionItems.done, false),
           or(sql`${actionItems.jobId} IS NULL`, eq(jobs.status, 'completed')),
-          or(eq(actionItems.assigneeId, person.id), sql`LOWER(${actionItems.owner}) = ${matchName}`),
+          taskVisibleTo(person.id, matchName),
         ))
         .orderBy(sql`${actionItems.dueOn} ASC NULLS LAST`)
         .limit(200)

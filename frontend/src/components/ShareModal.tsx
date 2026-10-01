@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Buildings, Check, Copy, LinkBreak, UsersThree, X } from '@phosphor-icons/react'
+import { Buildings, Check, Copy, LinkBreak, UserPlus, UsersThree, X } from '@phosphor-icons/react'
 import { api, type ShareKind } from '../lib/api'
 import { useToast } from './Toast'
+import { PeoplePicker, loadPeople, personName } from './PeoplePicker'
 
 interface Props {
   open: boolean
@@ -12,10 +13,39 @@ interface Props {
   initialInternal: string | null | undefined
   initialStakeholder: string | null | undefined
   onTokensChange: (next: { shareToken: string | null; shareTokenMom: string | null }) => void
+  memberIds: string[]
+  onMembersChange: (ids: string[]) => void
 }
 
-export function ShareModal({ open, onClose, jobId, filename, initialInternal, initialStakeholder, onTokensChange }: Props) {
+export function ShareModal({ open, onClose, jobId, filename, initialInternal, initialStakeholder, onTokensChange, memberIds, onMembersChange }: Props) {
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [names, setNames] = useState<string[]>([])
+
+  useEffect(() => {
+    if (!open || memberIds.length === 0) {
+      setNames([])
+      return
+    }
+    loadPeople()
+      .then((people) => setNames(people.filter((p) => memberIds.includes(p.id)).map(personName)))
+      .catch(() => setNames([]))
+  }, [open, memberIds])
+
+  const saveMembers = async (ids: string[]) => {
+    const res = await api.put<{ memberIds: string[] }>(`/jobs/${jobId}/members`, { userIds: ids })
+    onMembersChange(res.memberIds)
+  }
+
   return (
+    <>
+    <PeoplePicker
+      open={pickerOpen}
+      title="Bagikan ke anggota tim"
+      subtitle={filename}
+      initial={memberIds}
+      onSave={saveMembers}
+      onClose={() => setPickerOpen(false)}
+    />
     <AnimatePresence>
       {open && (
         <div className="fixed inset-0 z-[70] grid place-items-center p-4">
@@ -44,6 +74,28 @@ export function ShareModal({ open, onClose, jobId, filename, initialInternal, in
             </div>
 
             <div className="p-4 space-y-3 max-h-[70dvh] overflow-y-auto">
+              <div className="rounded-xl border border-slate-200/80 p-4">
+                <div className="flex items-start gap-3">
+                  <div className="grid place-items-center w-10 h-10 rounded-lg bg-indigo-50 text-indigo-600 flex-shrink-0">
+                    <UserPlus size={20} weight="duotone" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <span className="font-semibold text-navy text-sm">Anggota tim</span>
+                    <p className="text-xs text-ink-muted mt-1 leading-relaxed">
+                      Pilih siapa saja yang boleh membuka rapat ini di akun Pinote mereka. Tidak ada yang dibagikan otomatis.
+                    </p>
+                    {names.length > 0 && (
+                      <p className="text-xs text-navy mt-2 leading-relaxed">{names.join(', ')}</p>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setPickerOpen(true)}
+                  className="btn-ghost !text-xs !py-1.5 w-full mt-3 border border-slate-200 hover:border-navy/30"
+                >
+                  {memberIds.length > 0 ? `Atur anggota (${memberIds.length})` : 'Pilih anggota'}
+                </button>
+              </div>
               <ShareOption
                 kind="internal"
                 jobId={jobId}
@@ -71,6 +123,7 @@ export function ShareModal({ open, onClose, jobId, filename, initialInternal, in
         </div>
       )}
     </AnimatePresence>
+    </>
   )
 }
 

@@ -1,9 +1,10 @@
 import { Hono } from 'hono'
-import { and, asc, desc, eq, inArray, lt, ne, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, lt, ne, or, sql } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { z } from 'zod'
 import { db } from '../db/client.js'
-import { actionItems, jobs, users, type ActionItemRow, type JobStatus } from '../db/schema.js'
+import { actionItemMembers, actionItems, jobMembers, jobs, users, type ActionItemRow, type JobStatus } from '../db/schema.js'
+import { fallbackMeetingTitle, sendTaskDigest } from '../services/email.js'
 import { requireAuth, type AppEnv } from '../middleware/auth.js'
 import { isAllowedMime, normalizeMime, MAX_FILE_BYTES } from '../lib/validate.js'
 import { cacheIncrWithTtl, cacheJobStatus, getCachedJobStatus } from '../services/cache.js'
@@ -29,7 +30,7 @@ const createSchema = z.object({
   skipInsights: z.boolean().optional(),
   titleHint: z.string().max(300).optional(),
   nativeTranscript: nativeTranscriptSchema.optional(),
-  attendance: z.array(z.string().min(1).max(120)).max(50).optional(),
+  attendance: z.array(z.string().min(1).max(120)).max(50).transform((names) => names.filter((n) => !n.includes('@'))).optional(),
   speakerTimeline: z
     .array(
       z.object({
@@ -54,6 +55,44 @@ jobsRouter.get('/shared/:token', async (c) => {
 
   const items = job.status === 'completed' ? await loadActionItems(job.id) : []
   return c.json(toJobDetail(job, false, undefined, items))
+})
+
+type JobAccess = 'owner' | 'member'
+
+async function jobAccess(jobId: string, userId: string): Promise<JobAccess | null> {
+  const [row] = await db
+    .select({ userId: jobs.userId, isPrivate: jobs.isPrivate })
+    .from(jobs)
+    .where(eq(jobs.id, jobId))
+    .limit(1)
+  if (!row) return null
+  if (row.userId === userId) return 'owner'
+  if (row.isPrivate) return null
+  const [member] = await db
+    .select({ userId: jobMembers.userId })
+    .from(jobMembers)
+    .where(and(eq(jobMembers.jobId, jobId), eq(jobMembers.userId, userId)))
+    .limit(1)
+  return member ? 'member' : null
+}
+
+async function knownUserIds(ids: string[], exclude: string): Promise<string[]> {
+  const unique = [...new Set(ids)].filter((id) => id !== exclude)
+  if (unique.length === 0) return []
+  const rows = await db.select({ id: users.id }).from(users).where(inArray(users.id, unique))
+  return rows.map((r) => r.id)
+}
+
+const memberIdsSchema = z.object({ userIds: z.array(z.string().min(1).max(64)).max(1000) })
+
+jobsRouter.get('/people', async (c) => {
+  const user = c.get('user')
+  const rows = await db
+    .select({ id: users.id, username: users.username, displayName: users.displayName })
+    .from(users)
+    .where(ne(users.id, user.id))
+    .orderBy(asc(sql`LOWER(COALESCE(${users.displayName}, ${users.username}))`))
+  return c.json({ people: rows })
 })
 
 jobsRouter.post('/', async (c) => {
@@ -109,7 +148,16 @@ jobsRouter.get('/', async (c) => {
   const cursor = c.req.query('cursor')
   const limit = Math.min(Math.max(Number(c.req.query('limit') ?? 100), 1), 200)
 
-  const conditions = [eq(jobs.userId, user.id), ne(jobs.status, 'cancelled')]
+  const conditions = [
+    or(
+      eq(jobs.userId, user.id),
+      and(
+        eq(jobs.isPrivate, false),
+        sql`EXISTS (SELECT 1 FROM job_members m WHERE m.job_id = ${jobs.id} AND m.user_id = ${user.id})`
+      )
+    )!,
+    ne(jobs.status, 'cancelled'),
+  ]
   if (cursor) {
     conditions.push(lt(jobs.createdAt, new Date(cursor)))
   }
@@ -128,8 +176,11 @@ jobsRouter.get('/', async (c) => {
       source: jobs.source,
       isPrivate: jobs.isPrivate,
       speakerCount: sql<number | null>`(${jobs.transcript}->>'speakerCount')::int`,
+      isOwner: sql<boolean>`${jobs.userId} = ${user.id}`,
+      ownerName: sql<string | null>`COALESCE(${users.displayName}, ${users.username})`,
     })
     .from(jobs)
+    .leftJoin(users, eq(users.id, jobs.userId))
     .where(and(...conditions))
     .orderBy(desc(jobs.createdAt))
     .limit(limit + 1)
@@ -155,12 +206,9 @@ jobsRouter.get('/:id', async (c) => {
   const user = c.get('user')
   const id = c.req.param('id')
 
-  const [job] = await db
-    .select()
-    .from(jobs)
-    .where(and(eq(jobs.id, id), eq(jobs.userId, user.id)))
-    .limit(1)
-
+  const access = await jobAccess(id, user.id)
+  if (!access) return c.json({ error: 'Job tidak ditemukan' }, 404)
+  const [job] = await db.select().from(jobs).where(eq(jobs.id, id)).limit(1)
   if (!job) return c.json({ error: 'Job tidak ditemukan' }, 404)
 
   // Get progress from cache (Phase 2 background processing sends progress updates)
@@ -173,7 +221,104 @@ jobsRouter.get('/:id', async (c) => {
   }
 
   const items = job.status === 'completed' ? await loadActionItems(id) : []
-  return c.json(toJobDetail(job, true, progress, items))
+  const isOwner = access === 'owner'
+  const [owner] = await db
+    .select({ name: sql<string>`COALESCE(${users.displayName}, ${users.username})` })
+    .from(users)
+    .where(eq(users.id, job.userId))
+    .limit(1)
+  const members = isOwner
+    ? await db.select({ userId: jobMembers.userId }).from(jobMembers).where(eq(jobMembers.jobId, id))
+    : []
+  return c.json({
+    ...toJobDetail(job, isOwner, progress, items, await loadItemMembers(items)),
+    isOwner,
+    ownerName: owner?.name ?? null,
+    memberIds: members.map((m) => m.userId),
+  })
+})
+
+jobsRouter.put('/:id/members', async (c) => {
+  const user = c.get('user')
+  const id = c.req.param('id')
+  const parsed = memberIdsSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) return c.json({ error: 'Daftar anggota tidak valid' }, 400)
+
+  const [job] = await db
+    .select({ id: jobs.id, isPrivate: jobs.isPrivate })
+    .from(jobs)
+    .where(and(eq(jobs.id, id), eq(jobs.userId, user.id)))
+    .limit(1)
+  if (!job) return c.json({ error: 'Job tidak ditemukan' }, 404)
+  if (job.isPrivate) return c.json({ error: 'Rekaman privat seperti panggilan WhatsApp tidak bisa dibagikan.' }, 403)
+
+  const next = await knownUserIds(parsed.data.userIds, user.id)
+  await db.transaction(async (tx) => {
+    await tx.delete(jobMembers).where(eq(jobMembers.jobId, id))
+    if (next.length > 0) {
+      await tx.insert(jobMembers).values(next.map((userId) => ({ jobId: id, userId, addedBy: user.id }))).onConflictDoNothing()
+    }
+  })
+  return c.json({ memberIds: next })
+})
+
+jobsRouter.put('/:id/action-items/:itemId/members', async (c) => {
+  const user = c.get('user')
+  const id = c.req.param('id')
+  const itemId = c.req.param('itemId')
+  const parsed = memberIdsSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) return c.json({ error: 'Daftar penerima tidak valid' }, 400)
+
+  const [job] = await db
+    .select()
+    .from(jobs)
+    .where(and(eq(jobs.id, id), eq(jobs.userId, user.id)))
+    .limit(1)
+  if (!job) return c.json({ error: 'Job tidak ditemukan' }, 404)
+  if (job.isPrivate) return c.json({ error: 'Tugas dari rekaman privat tidak bisa dibagikan.' }, 403)
+
+  const [item] = await db
+    .select()
+    .from(actionItems)
+    .where(and(eq(actionItems.id, itemId), eq(actionItems.jobId, id)))
+    .limit(1)
+  if (!item) return c.json({ error: 'Tugas tidak ditemukan' }, 404)
+
+  const next = await knownUserIds(parsed.data.userIds, '')
+  const before = await db
+    .select({ userId: actionItemMembers.userId })
+    .from(actionItemMembers)
+    .where(eq(actionItemMembers.itemId, itemId))
+  const had = new Set(before.map((m) => m.userId))
+
+  await db.transaction(async (tx) => {
+    await tx.delete(actionItemMembers).where(eq(actionItemMembers.itemId, itemId))
+    if (next.length > 0) {
+      await tx.insert(actionItemMembers).values(next.map((userId) => ({ itemId, userId, addedBy: user.id }))).onConflictDoNothing()
+    }
+  })
+
+  const added = next.filter((userId) => !had.has(userId) && userId !== user.id)
+  if (added.length > 0) {
+    const recipients = await db
+      .select({ email: users.email, displayName: users.displayName, username: users.username })
+      .from(users)
+      .where(inArray(users.id, added))
+    const meetingAt = new Date(new Date(job.createdAt).getTime() - (job.durationSec ?? 0) * 1000)
+    for (const person of recipients) {
+      if (!person.email) continue
+      sendTaskDigest({
+        to: person.email,
+        tasks: [{ taskTitle: item.task, due: item.due ?? null }],
+        meetingTitle: job.title || fallbackMeetingTitle(meetingAt),
+        meetingAt,
+        jobId: job.id,
+        assigneeName: person.displayName ?? person.username,
+      }).catch((err) => console.warn(`[${job.id}] Task share email failed:`, err instanceof Error ? err.message : err))
+    }
+  }
+
+  return c.json({ itemId, sharedWith: next })
 })
 
 jobsRouter.get('/:id/audio', requireAuth, async (c) => {
@@ -187,8 +332,8 @@ jobsRouter.get('/:id/audio', requireAuth, async (c) => {
     .limit(1)
 
   if (!job) return c.json({ error: 'Job tidak ditemukan' }, 404)
-  const isOwner = job.userId === user.id
-  if (!isOwner && (!user.isAdmin || job.isPrivate)) return c.json({ error: 'Forbidden' }, 403)
+  const access = await jobAccess(id, user.id)
+  if (!access && (!user.isAdmin || job.isPrivate)) return c.json({ error: 'Forbidden' }, 403)
   if (!job.storageKey) return c.json({ error: 'Audio tidak tersedia' }, 404)
   if (!(await objectExists(job.storageKey))) {
     return c.json({ error: 'Rekaman audio sudah tidak ada di server' }, 404)
@@ -379,7 +524,8 @@ jobsRouter.patch('/:id/action-items', async (c) => {
   }
 
   const refreshed = await loadActionItems(id)
-  return c.json({ actionItems: refreshed })
+  const members = await loadItemMembers(refreshed)
+  return c.json({ actionItems: refreshed.map((it) => ({ ...it, sharedWith: members.get(it.id) ?? [] })) })
 })
 
 const askSchema = z.object({ question: z.string().trim().min(3).max(500) })
@@ -391,10 +537,11 @@ jobsRouter.post('/:id/ask', async (c) => {
   const parsed = askSchema.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: 'Tulis pertanyaan minimal 3 huruf.' }, 400)
 
+  if (!(await jobAccess(id, user.id))) return c.json({ error: 'Job tidak ditemukan' }, 404)
   const [job] = await db
     .select({ status: jobs.status, transcript: jobs.transcript, speakerNames: jobs.speakerNames, title: jobs.title })
     .from(jobs)
-    .where(and(eq(jobs.id, id), eq(jobs.userId, user.id)))
+    .where(eq(jobs.id, id))
     .limit(1)
   if (!job) return c.json({ error: 'Job tidak ditemukan' }, 404)
   const segments = job.transcript?.segments ?? []
@@ -485,7 +632,8 @@ function toJobDetail(
   job: typeof jobs.$inferSelect,
   includeShareToken: boolean,
   progress?: number,
-  items: ActionItemRow[] = []
+  items: ActionItemRow[] = [],
+  itemMembers: Map<string, string[]> = new Map()
 ) {
   return {
     id: job.id,
@@ -509,6 +657,7 @@ function toJobDetail(
         confidence: it.confidence,
         done: it.done,
         order: it.order,
+        sharedWith: itemMembers.get(it.id) ?? [],
       }))
       .sort((a, b) => a.order - b.order),
     error: job.errorMessage,
@@ -521,6 +670,17 @@ function toJobDetail(
     source: job.source,
     isPrivate: job.isPrivate,
   }
+}
+
+async function loadItemMembers(items: ActionItemRow[]): Promise<Map<string, string[]>> {
+  const map = new Map<string, string[]>()
+  if (items.length === 0) return map
+  const rows = await db
+    .select({ itemId: actionItemMembers.itemId, userId: actionItemMembers.userId })
+    .from(actionItemMembers)
+    .where(inArray(actionItemMembers.itemId, items.map((it) => it.id)))
+  for (const row of rows) map.set(row.itemId, [...(map.get(row.itemId) ?? []), row.userId])
+  return map
 }
 
 async function loadActionItems(jobId: string): Promise<ActionItemRow[]> {

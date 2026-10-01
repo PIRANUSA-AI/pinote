@@ -181,22 +181,28 @@ function displayCase(s: string): string {
   return t
 }
 
-async function canonicalizeOwners(items: ExtractedActionItem[]): Promise<ExtractedActionItem[]> {
+type MemberRow = { displayName: string | null; username: string; nameAliases: string[] | null }
+
+function memberNames(u: MemberRow): string[] {
+  return [u.displayName, u.username, ...(u.nameAliases ?? [])].filter((n): n is string => !!n && n.trim().length > 0)
+}
+
+async function attendingMembers(participants: string[]): Promise<MemberRow[]> {
+  const wanted = new Set(participants.map((p) => p.trim().toLowerCase()).filter(Boolean))
+  if (wanted.size === 0) return []
+  const rows = await db
+    .select({ displayName: users.displayName, username: users.username, nameAliases: users.nameAliases })
+    .from(users)
+    .orderBy(users.username)
+  return rows.filter((u) => memberNames(u).some((n) => wanted.has(n.trim().toLowerCase())))
+}
+
+function canonicalizeOwners(items: ExtractedActionItem[], rows: MemberRow[]): ExtractedActionItem[] {
   if (items.length === 0) return items
-  let rows: { displayName: string | null; username: string; nameAliases: string[] | null }[] = []
-  try {
-    rows = await db
-      .select({ displayName: users.displayName, username: users.username, nameAliases: users.nameAliases })
-      .from(users)
-  } catch {
-    return items
-  }
   const canonical = new Map<string, string>()
   for (const u of rows) {
     const canon = u.displayName ?? u.username
-    const names = [u.displayName, u.username, ...(u.nameAliases ?? [])]
-      .filter((n): n is string => !!n && n.trim().length > 0)
-    for (const n of names) canonical.set(n.trim().toLowerCase(), canon)
+    for (const n of memberNames(u)) canonical.set(n.trim().toLowerCase(), canon)
   }
   return items.map((it) => {
     const canon = canonical.get(it.owner.trim().toLowerCase())
@@ -214,30 +220,15 @@ function dedupeOwners(items: ExtractedActionItem[]): ExtractedActionItem[] {
   return [...seen.values()]
 }
 
-async function buildUserContext(): Promise<string> {
-  try {
-    const rows = await db
-      .select({
-        username: users.username,
-        displayName: users.displayName,
-        nameAliases: users.nameAliases,
-      })
-      .from(users)
-      .orderBy(users.username)
-
-    if (rows.length === 0) return ''
-
-    const lines = rows.map((u) => {
-      const name = u.displayName ?? u.username
-      const aliases = (u.nameAliases ?? []).filter(Boolean)
-      const aliasStr = aliases.length > 0 ? ` (alias: ${aliases.join(', ')})` : ''
-      return `- ${name} (username: ${u.username})${aliasStr}`
-    })
-
-    return `DAFTAR ANGGOTA TIM TERDAFTAR:\n${lines.join('\n')}\n\n`
-  } catch {
-    return ''
-  }
+function buildUserContext(rows: MemberRow[]): string {
+  if (rows.length === 0) return ''
+  const lines = rows.map((u) => {
+    const name = u.displayName ?? u.username
+    const aliases = (u.nameAliases ?? []).filter(Boolean)
+    const aliasStr = aliases.length > 0 ? ` (alias: ${aliases.join(', ')})` : ''
+    return `- ${name} (username: ${u.username})${aliasStr}`
+  })
+  return `DAFTAR ANGGOTA TIM YANG HADIR DI RAPAT INI:\n${lines.join('\n')}\n\n`
 }
 
 function buildSystemBase(userContext: string): string {
@@ -453,16 +444,18 @@ async function extractLargeInsights(
 }
 
 export async function generateInsights(
-  segments: TranscriptSegment[]
+  segments: TranscriptSegment[],
+  participants: string[] = []
 ): Promise<{ title: string; summary: string; actionItems: ExtractedActionItem[] }> {
   const lines = buildLines(segments)
   const totalLen = lines.reduce((n, l) => n + l.length + 1, 0)
-  const userContext = await buildUserContext()
+  const members = await attendingMembers(participants).catch(() => [] as MemberRow[])
+  const userContext = buildUserContext(members)
 
   const result = totalLen <= CHUNK_CHAR_TARGET
     ? await extractSingle(lines.join('\n').slice(0, 60000), userContext)
     : await extractLargeInsights(lines, totalLen, userContext)
 
-  const actionItems = dedupeOwners(await canonicalizeOwners(result.actionItems))
+  const actionItems = dedupeOwners(canonicalizeOwners(result.actionItems, members))
   return { title: result.title, summary: result.summary, actionItems }
 }
